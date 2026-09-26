@@ -387,6 +387,185 @@ def write_note(title, body, folder="Notes", links=None):
                   [node.id] if node else [])
 
 
+# ------------------------------------------------------------------ trading: rules, eval, trade log
+# Numbers come only from Ali's own notes (Risk Rules, Eval, trade notes). A blank ("___") stays
+# None and is reported as missing, never guessed. Every total is labelled as simulated eval P&L.
+_NUMBER = re.compile(r"[+-]?\d[\d,]*(?:\.\d+)?")
+
+
+def _field(text, label):
+    """First number after `label` on the same line (e.g. 'Risk per trade: $250'), or None if blank."""
+    m = re.search(rf"(?i){label}[^\n\d$]{{0,40}}(?P<rest>[^\n]*)", text or "")
+    if not m:
+        return None
+    n = _NUMBER.search(m.group("rest").split("(")[0])
+    return float(n.group().replace(",", "")) if n else None
+
+
+def _note(*titles, type_=None):
+    v = V()
+    for t in titles:
+        n = next((n for n in v.notes if n.title.lower() == t.lower()), None)
+        if n:
+            return n
+    return next((n for n in v.notes if n.type == type_), None) if type_ else None
+
+
+def _rules():
+    n = _note("Risk Rules")
+    text = n.text if n else ""
+    return n, {"risk_per_trade": _field(text, r"risk per trade"),
+               "max_losses_per_day": _field(text, r"max(imum)? losses per day"),
+               "max_daily_loss": _field(text, r"max(imum)? daily loss")}
+
+
+def _eval():
+    n = _note("Eval", type_="account")
+    text = n.text if n else ""
+    return n, {"target": _field(text, r"profit target"), "max_drawdown": _field(text, r"max(imum)? drawdown"),
+               "daily_loss_limit": _field(text, r"daily loss( limit)?"),
+               "balance": _field(text, r"current balance")}
+
+
+def _trade_of(n):
+    """Date, $ P&L and R for a trade note: frontmatter first, then a 'Result: +1.5R = +$375' line."""
+    day = n.meta.get("date") or (re.search(r"\d{4}-\d{2}-\d{2}", n.title) or [None])[0]
+    pnl = r = None
+    if n.meta.get("pnl") not in (None, ""):
+        try:
+            pnl = float(str(n.meta["pnl"]).replace(",", "").replace("$", ""))
+        except ValueError:
+            pass
+    if n.meta.get("r") not in (None, ""):
+        try:
+            r = float(n.meta["r"])
+        except ValueError:
+            pass
+    line = next((l for l in n.text.splitlines() if l.lower().lstrip("-* ").startswith("result")), "")
+    if pnl is None:
+        m = re.search(r"([+-])?\s*\$\s*(\d[\d,]*(?:\.\d+)?)", line)
+        if m:
+            pnl = float(m.group(2).replace(",", "")) * (-1 if m.group(1) == "-" else 1)
+    if r is None:
+        m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*R\b", line)
+        if m:
+            r = float(m.group(1))
+    return {"date": str(day) if day else None, "pnl": pnl, "r": r, "note": n}
+
+
+def _trades():
+    return [_trade_of(n) for n in V().notes if n.type == "trade"]
+
+
+def _eval_summary():
+    today = clock.uk_today().isoformat()
+    _, rules = _rules()
+    _, ev = _eval()
+    trades = _trades()
+    priced = [t for t in trades if t["pnl"] is not None]
+    total = sum(t["pnl"] for t in priced)
+    todays = [t for t in trades if t["date"] == today]
+    today_pnl = sum(t["pnl"] for t in todays if t["pnl"] is not None)
+    losses_today = sum(1 for t in todays if (t["pnl"] if t["pnl"] is not None else (t["r"] or 0)) < 0)
+    s = {"logged_trades": len(trades), "with_dollar_figure": len(priced), "total_pnl": round(total, 2),
+         "today_pnl": round(today_pnl, 2), "trades_today": len(todays), "losses_today": losses_today,
+         "rules": rules, "eval": ev, "qualifier": "simulated eval P&L, only as complete as your trade log",
+         "missing": [k for k, v in {**rules, **ev}.items() if v is None and k != "balance"], "alerts": []}
+    if ev["target"]:
+        s["to_target"] = round(ev["target"] - total, 2)
+    if rules["max_losses_per_day"] and losses_today >= rules["max_losses_per_day"]:
+        s["alerts"].append(f"{losses_today} losses today: that's your max of {int(rules['max_losses_per_day'])}. "
+                           "Your own rule says you're done for the day.")
+    limit = ev["daily_loss_limit"] or rules["max_daily_loss"]
+    if limit and today_pnl < 0:
+        s["daily_room"] = round(limit + today_pnl, 2)
+        if today_pnl <= -limit:
+            s["alerts"].append(f"Down ${-today_pnl:,.0f} today, at or past your ${limit:,.0f} daily loss limit.")
+    return s
+
+
+def _money(x):
+    return f"{'+' if x >= 0 else '-'}${abs(x):,.0f}"
+
+
+def eval_status():
+    s = _eval_summary()
+    if not s["logged_trades"]:
+        return result("No trades logged yet, so I can't track the eval. Tell me about a trade and I'll log it.",
+                      [card("eval", "Eval · no trades logged")], s)
+    rows = [{"text": f"Logged P&L {_money(s['total_pnl'])}", "sub": s["qualifier"],
+             "meta": f"{s['with_dollar_figure']}/{s['logged_trades']} trades priced"}]
+    if "to_target" in s:
+        pct = 100 * s["total_pnl"] / s["eval"]["target"] if s["eval"]["target"] else 0
+        rows.append({"text": f"Target ${s['eval']['target']:,.0f}", "meta": f"{pct:.0f}%",
+                     "sub": f"${max(s['to_target'], 0):,.0f} to go" if s["to_target"] > 0 else "Target reached on paper"})
+    rows.append({"text": f"Today {_money(s['today_pnl'])}", "meta": f"{s['trades_today']} trades",
+                 "sub": f"{s['losses_today']} losses" + (f" · ${s['daily_room']:,.0f} room before the daily limit"
+                                                          if "daily_room" in s else "")})
+    foot = ("Blank in your notes: " + ", ".join(k.replace("_", " ") for k in s["missing"]) + ".") if s["missing"] else None
+    say = f"Logged P&L is {_money(s['total_pnl'])}, simulated."
+    if "to_target" in s:
+        say += f" ${max(s['to_target'], 0):,.0f} to the target." if s["to_target"] > 0 else " Target reached on paper."
+    if s["alerts"]:
+        say += " " + s["alerts"][0]
+    elif "daily_room" in s:
+        say += f" Today you're {_money(s['today_pnl'])}, ${s['daily_room']:,.0f} before your daily limit."
+    return result(say, [card("eval", "Eval · from your trade log", rows, foot=foot,
+                             warn=" ".join(s["alerts"]) or None)], s,
+                  [t["note"].id for t in _trades()[-5:]])
+
+
+def log_trade(setup, direction, result_r=None, pnl=None, session="New York", followed_rules=True,
+              broke="", feeling="", lesson="", date=None):
+    day = date or clock.uk_today().isoformat()
+    try:
+        dt.date.fromisoformat(day)
+    except ValueError:
+        return result("I need the date as YYYY-MM-DD.", [], {"error": "bad date"})
+    if result_r is None and pnl is None:
+        return result("How did it go? I need the result in R or dollars.", [], {"error": "result missing: ask Ali"})
+    _, rules = _rules()
+    basis = "as you told me"
+    if pnl is None and rules["risk_per_trade"]:
+        pnl = round(float(result_r) * rules["risk_per_trade"], 2)
+        basis = f"derived: {float(result_r):+g}R × ${rules['risk_per_trade']:,.0f} risk per trade from Risk Rules"
+    elif pnl is None:
+        basis = "no dollar figure: Risk Rules has no risk per trade"
+    setup_link = f"[[{setup}]]" if _note(setup) else setup
+    eval_note = _eval()[0]
+    r_txt = f"{float(result_r):+g}R" if result_r is not None else None
+    pnl_txt = _money(float(pnl)) if pnl is not None else None
+    lines = [f"Session: {session}", f"Setup: {setup_link}", f"Direction: {direction}",
+             f"Result: {' = '.join(x for x in (r_txt, pnl_txt) if x)} on the eval (simulated; {basis})",
+             f"Followed [[Risk Rules]]? {'yes' if followed_rules else 'no'}" + (f": broke {broke}" if broke else "")]
+    if feeling:
+        lines.append(f"What I felt: {feeling}")
+    if lesson:
+        lines.append(f"Lesson: {lesson}")
+    lines += ["", f"Account: [[{eval_note.title}]]" if eval_note else "Account: eval"]
+    body = "\n".join(lines)
+    meta = {"type": "trade", "date": day, "session": session, "setup": setup, "direction": direction,
+            "r": "" if result_r is None else float(result_r), "pnl": "" if pnl is None else float(pnl),
+            "pnl_basis": basis, "followed_rules": "yes" if followed_rules else "no", "source": "jarvis"}
+    try:
+        rel = data.write_note("Trades", f"Trade - {setup} {direction}", body, meta)
+    except Exception as e:
+        return result(f"I couldn't log it: {e}", [card("error", "Trade not logged", foot=str(e))], {"error": str(e)})
+    v = vault.reload()
+    node = next((n for n in v.notes if n.rel == rel), None)
+    logged = f"{direction} {setup}, " + (f"{r_txt} ({pnl_txt})" if r_txt and pnl_txt else r_txt or pnl_txt)
+    s = _eval_summary()
+    return result(f"Logged: {logged}.",
+                  [card("saved", f"Trade logged · {rel}", body=body,
+                        rows=[{"text": logged, "sub": basis, "note": node.id if node else None, "tag": "new"}],
+                        foot="New file in JARVIS/Trades. Edit or move it in Obsidian; JARVIS never changes it.",
+                        warn=" ".join(s["alerts"]) or None)],
+                  {"logged": logged, "saved": rel, "graph_changed": True, "pnl_basis": basis,
+                   "eval_after": {k: s[k] for k in ("total_pnl", "today_pnl", "losses_today", "alerts", "qualifier")
+                                  if k in s} | ({"to_target": s["to_target"]} if "to_target" in s else {})},
+                  [node.id] if node else [])
+
+
 # ------------------------------------------------------------------ remember
 def remember(fact, topic="general"):
     try:
@@ -523,6 +702,27 @@ SPECS = [
          "length_s": {"type": "integer", "description": "Target length in seconds (default 60)"},
          "notes": {"type": "string", "description": "Filming notes: location, b-roll, on-screen text"}},
          "required": ["title", "hook", "beats"]}},
+    {"name": "log_trade",
+     "description": "Log one of Ali's trades as a journal note in his vault (JARVIS/Trades). Use when he tells you "
+                    "about a trade he took. Needs the setup, direction and a result in R or dollars; ask briefly if "
+                    "the result is missing, don't nag for the rest. Dollars are derived from R using his Risk "
+                    "Rules if he only gives R. After logging, say what you logged and one line on the eval.",
+     "input_schema": {"type": "object", "properties": {
+         "setup": {"type": "string", "description": "e.g. VWAP Reclaim, Opening Range Breakout"},
+         "direction": {"type": "string", "enum": ["long", "short"]},
+         "result_r": {"type": "number", "description": "Result in R, negative for a loss"},
+         "pnl": {"type": "number", "description": "Dollar result if he gave one, negative for a loss"},
+         "session": {"type": "string", "enum": ["New York", "Asia", "London", "other"]},
+         "followed_rules": {"type": "boolean"},
+         "broke": {"type": "string", "description": "Which rule he broke, if any"},
+         "feeling": {"type": "string", "description": "How he felt, in his words"},
+         "lesson": {"type": "string"},
+         "date": {"type": "string", "description": "YYYY-MM-DD, only if not today"}},
+         "required": ["setup", "direction"]}},
+    {"name": "eval_status",
+     "description": "Ali's prop-firm eval from his own notes: logged P&L (simulated), distance to target, today's "
+                    "P&L and losses against his daily limits, and which figures are still blank in his notes.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "remember",
      "description": "Store one fact about Ali in JARVIS's memory, loaded into every future conversation. Use when he "
                     "asks you to remember something, or tells you something about himself that will still matter in "
@@ -556,12 +756,13 @@ SPECS = [
 FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox": read_inbox,
          "brief_me": brief_me, "plan_day": plan_day, "find_niches": find_niches,
          "draft_message": draft_message, "draft_script": draft_script, "write_note": write_note,
-         "remember": remember, "schedule_event": schedule_event}
+         "remember": remember, "log_trade": log_trade, "eval_status": eval_status,
+         "schedule_event": schedule_event}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches"}
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
-WRITES = {"remember", "write_note"}
+WRITES = {"remember", "write_note", "log_trade"}
 
 
 def run(name, args):

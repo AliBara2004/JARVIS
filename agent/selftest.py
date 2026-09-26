@@ -121,6 +121,14 @@ check("…accepts a paraphrase that keeps the facts", brain._said("Got it: £1,5
 check("…but not one with the wrong number", not brain._said("Noted: you charge £2,000 for migrations.",
                                                               "I charge £1500 for migrations"))
 
+print("\nTrading numbers come only from the notes")
+check("Reads 'Risk per trade: $250'", tools._field("- Risk per trade: $250", r"risk per trade") == 250)
+check("A blank ($___) stays blank, never guessed", tools._field("- Risk per trade: $___", r"risk per trade") is None)
+from types import SimpleNamespace as _N  # noqa: E402
+_t = tools._trade_of(_N(meta={}, title="Trade 2026-09-26", text="Result: -1R = -$250 on the eval"))
+check("Reads a losing result line as negative", (_t["pnl"], _t["r"]) == (-250, -1))
+check("log_trade refuses without a result", "error" in tools.log_trade("ORB", "long")["data"])
+
 print("\nCalendar needs Ali's confirm")
 before = len(tools.pending_list())
 r = tools.run("schedule_event", {"title": "Selftest", "start": "2099-01-01T10:00"})

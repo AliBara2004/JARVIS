@@ -204,7 +204,9 @@ def _model_turn(text, emit):
             if isinstance(r["data"], dict):
                 if r["data"].get("remembered"):
                     written.append(("fact", r["data"]["remembered"]))
-                if r["data"].get("saved"):
+                if r["data"].get("logged"):
+                    written.append(("trade", r["data"]["logged"]))
+                elif r["data"].get("saved"):
                     written.append(("note", r["data"]["saved"]))
             changed = changed or bool(isinstance(r["data"], dict) and r["data"].get("graph_changed"))
             cards += r["cards"]
@@ -227,6 +229,8 @@ def _model_turn(text, emit):
     for kind, what in written:
         if kind == "fact" and not _said(reply, what):
             extra.append(f"I've noted: {what}")
+        if kind == "trade" and not _said(reply, what):
+            extra.append(f"Logged: {what}.")
         if kind == "note":
             title = what.rsplit("/", 1)[-1][11:-3]           # "JARVIS/Ideas/2026-09-26 Title.md" → "Title"
             if not _said(reply, title):
@@ -258,10 +262,11 @@ INTENTS = [
     (r"\bplan\b.*\bday\b|\bplan my\b|what should i do", "plan_day", {}),
     (r"\binbox\b|\be-?mail(s|ed)?\b|\bunread\b|who('?s| has)? (wrote|written|messaged)", "read_inbox", {}),
     (r"\bniches?\b", "find_niches", {}),
+    (r"\beval\b|how('?s| is| are) (my )?(trading|trades)", "eval_status", {}),
 ]
 
 
-NEEDS_MODEL = (r"\b(book|schedule|arrange|draft|research|look up|google|script|tiktok|video ideas?|hook"
+NEEDS_MODEL = (r"\b(book|schedule|arrange|draft|research|look up|google|script|tiktok|video ideas?|hook|log"
                r"|write (this|that|it) (down|up)|save (this|that|it)|note (this|that) down)\b"
                r"|put .* in (my )?(calendar|diary)"
                r"|write (me )?(an? )?(email|reply|message)")

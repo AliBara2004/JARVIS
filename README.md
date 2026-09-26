@@ -55,7 +55,8 @@ It checks every guardrail against the code and costs nothing. It also runs the s
 - Prospects: put `status: contacted`, `status: call booked` or `status: proposal sent` in the frontmatter. That feeds **Brief** ("what slipped") and **Plan** (ranked by what moves money).
 - Tasks: `- [ ] Chase Cobalt Dental 📅 2026-10-01` (the Obsidian Tasks format). Overdue ones show in the brief.
 - Niches: write a score like `→ 12/15` in the note. **Find niches** ranks by it.
-- JARVIS writes **only** into a `JARVIS/` folder in your vault (`Scripts`, `Ideas`, `Journal`, `Notes`), and only new files.
+- JARVIS writes **only** into a `JARVIS/` folder in your vault (`Scripts`, `Ideas`, `Journal`, `Notes`, `Trades`), and only new files.
+- Trading numbers are read from **Risk Rules** (`Risk per trade: $250`, `Max losses per day before I stop: 2`, `Max daily loss: $…`), **Eval** (`Profit target`, `Max drawdown`, `Daily loss limit`) and trade notes (`Result: +1.5R = +$375`, or `pnl:` in the header). Blanks stay blank.
 
 It reads Markdown, text and PDF. It skips `Templates/`, `.obsidian`, `.git`, `node_modules` and anything over 2 MB. Scanned PDFs have no text layer and are skipped.
 
@@ -95,6 +96,8 @@ The wake word's `THRESHOLD` is at the top of `ui/wake.js`. Lower it if it misses
 | draft_script | A TikTok voiceover script in your voice, with subtitle-length lines |
 | write_note | Saves a new note into `JARVIS/` in your vault, when you ask |
 | remember | One fact per dated file in `memory/`, said out loud, loaded into every conversation |
+| log_trade | "Log today's trade: long VWAP reclaim, +1.5R" writes a journal note to `JARVIS/Trades`. Dollars come from R × your risk per trade in Risk Rules, and the note says so |
+| eval_status | Logged P&L (simulated) against the target and daily limits in your Eval note. Warns at your loss limits, and lists what's blank in your notes |
 | schedule_event | Proposes a calendar event. It's added only when you confirm; nobody is invited |
 
 With no model (no key, no credit, or no connection), JARVIS still routes by keyword and marks every reply **keyword routing · model offline**. Small talk gets talk, not a search result.
