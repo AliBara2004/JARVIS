@@ -70,7 +70,8 @@ A starter vault lives at `C:\Users\abara\Documents\JARVIS Vault`. Open **Start h
 | **Type** | `/` focuses the ask bar. Enter sends |
 | **Hey Jarvis** | Click once to arm. JARVIS listens on standby for "Hey Jarvis", chimes, then takes your question. Back to standby after 20 s of quiet or Esc. Remembered between visits |
 | **Mic / Space** | Start talking without the wake word. Your turn ends after 0.9 s of silence |
-| **Space / Esc while it talks** | Interrupt. The mic is deaf while JARVIS speaks, so it never hears itself |
+| **Space / Esc / "Hey Jarvis" while it talks** | Interrupt. The mic ignores JARVIS's own voice; only a clear "Hey Jarvis" (stricter threshold, `BARGE_IN_THRESHOLD` in `ui/app.js`) cuts in, and whatever you say next is your new question |
+| **$ today** (chip, top-left) | Estimated spend today; click for today and this month (Claude tokens and searches, ElevenLabs credits). Turns red past `JARVIS_DAILY_BUDGET` (default $2) |
 | **Mute** | JARVIS keeps listening but stops speaking |
 | **Brief / Plan / Market / Memory** | Calendar + unread + what slipped + today's red folders · five things ranked by money · pre-session news and markets · what it remembers about you |
 | **Graph** | Drag to pan, scroll to zoom, drag a node to move it (double-click to release). Click opens a note. Shift-click a second node traces the shortest path. `F` fits |
@@ -127,7 +128,7 @@ With no model (no key, no credit, or no connection), JARVIS still routes by keyw
 | Market brief | Free | Forex Factory's calendar feed (fetched at most hourly, cached in `data/cache/`) and Yahoo Finance prices (unofficial, delayed, may break) |
 | Google APIs | Free | |
 
-Prices as of September 2026. Check the providers' pricing pages before relying on them.
+Prices as of September 2026. Check the providers' pricing pages before relying on them. JARVIS keeps its own running estimate in `data/usage.json` (click the **$ today** chip). It only counts from when tracking was added, and it's an estimate: the providers' dashboards are the bill.
 
 ## Files
 

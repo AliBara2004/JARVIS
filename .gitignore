@@ -12,3 +12,5 @@ data/demo_vault/JARVIS/
 __pycache__/
 *.pyc
 data/cache/
+data/usage.json
+data/usage.tmp

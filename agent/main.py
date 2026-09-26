@@ -22,6 +22,7 @@ import google
 import llm
 import memory
 import tools
+import usage
 import vault
 import voice
 
@@ -49,6 +50,7 @@ def status():
         "voice": voice.status(),
         "google": {"configured": google.configured(), "connected": google.connected(), "demo": data.DEMO},
         "web_search": tools.WEB_SEARCH,
+        "usage": usage.summary(),
         "pending": tools.pending_list(),
     }
 
@@ -91,14 +93,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
 
-        def emit(ev):
-            self.wfile.write((json.dumps(ev, default=str, ensure_ascii=False) + "\n").encode("utf-8"))
-            self.wfile.flush()
+        gone = {"yes": False}
 
-        try:
-            emit({"type": "done", **brain.ask(text, emit)})
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass                                       # the page was closed mid-answer
+        def emit(ev):
+            # If Ali interrupts, the page stops reading. Finish the answer anyway (quietly), so the
+            # conversation history is complete for his follow-up.
+            if gone["yes"]:
+                return
+            try:
+                self.wfile.write((json.dumps(ev, default=str, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                gone["yes"] = True
+
+        emit({"type": "done", **brain.ask(text, emit)})
 
     # ------------------------------------------------------------ GET
     def do_GET(self):

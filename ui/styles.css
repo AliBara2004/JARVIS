@@ -300,3 +300,6 @@ button.link:hover { color: var(--text); }
 .reactor[data-state="standby"] .r2 { animation: spin 60s linear infinite reverse; opacity: .35; }
 .reactor[data-state="standby"] .core { opacity: .35; animation: breathe 6s ease-in-out infinite; }
 .reactor[data-state="standby"] .reactor-state { color: var(--faint); }
+
+#spend-chip { cursor: pointer; }
+#spend-chip:hover { color: var(--text); }

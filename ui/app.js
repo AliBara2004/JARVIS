@@ -24,6 +24,7 @@ const ECHO_GRACE_MS = 350;       // stay deaf this long after JARVIS stops talki
 const DEAD_MIC_MS = 4000;        // a mic reporting pure silence this long is muted or the wrong device
 const MAX_SPOKEN_CHARS = 1200;   // a reply longer than this is spoken up to here; the screen has the rest
 const PLAY_START_TIMEOUT_MS = 5000;  // reply audio that hasn't started by now is abandoned (text stays on screen)
+const BARGE_IN_THRESHOLD = 0.8;  // "Hey Jarvis" must be this clear to cut in while JARVIS talks (its own voice leaks into the mic)
 const CONVO_IDLE_MS = 20000;     // with "hey Jarvis" armed: this long without you speaking → back to standby
 
 const $ = s => document.querySelector(s);
@@ -120,12 +121,17 @@ function renderStatus(s) {
 
   const chip = ([cls, label, title], id = '') =>
     `<span class="chip ${cls}" ${id ? `id="${id}"` : ''} title="${esc(title)}">${esc(label)}</span>`;
+  const u = s.usage, spent = u.today.usd;
+  const spend = [u.over_budget ? 'warn' : 'ok', `$${spent < 10 ? spent.toFixed(2) : spent.toFixed(0)} today`,
+                 `Estimated spend today. This month: $${u.month.usd.toFixed(2)}. Daily budget $${u.budget_usd}. Click for detail.`];
+  if (u.over_budget) warnBudgetOnce(u);
   $('#chips').innerHTML =
     chip(model) +
     chip(!s.voice.key ? ['warn', 'Voice off', 'No ElevenLabs key in .env']
       : s.voice.tts_error || s.voice.stt_error ? ['warn', 'Voice', s.voice.tts_error || s.voice.stt_error]
       : ['ok', 'Voice', 'ElevenLabs speech in and out. Press Mic or Space.']) +
-    chip(google, 'google-chip');
+    chip(google, 'google-chip') +
+    chip(spend, 'spend-chip');
   $('#model-badge').hidden = s.model.state === 'ready' || s.model.state === 'unchecked';
   const tips = { '#mic': 'Talk (Space). Esc to stop.', '#mute': 'Keep listening, stop speaking',
                  '#wake': 'Standby: say "Hey Jarvis" to start talking. Detected on this PC; nothing is sent until then.' };
@@ -252,13 +258,15 @@ async function ask(text, opts = {}) {
   const ex = addExchange(text);
   setReactor('thinking');
   let r = null, shown = '';
+  const ctrl = new AbortController();
+  Voice.abortAnswer = () => ctrl.abort();      // barge-in stops waiting for the rest of this answer
   const sayEl = () => {
     const j = ex.querySelector('.jarvis');
     if (j.classList.contains('pending')) { j.classList.remove('pending'); j.innerHTML = '<p class="say"></p>'; }
     return j.querySelector('.say');
   };
   try {
-    const res = await fetch('/api/ask/stream', { method: 'POST', body: JSON.stringify({ text }),
+    const res = await fetch('/api/ask/stream', { method: 'POST', body: JSON.stringify({ text }), signal: ctrl.signal,
       headers: { 'Content-Type': 'application/json', 'X-Jarvis': '1' } });
     if (!res.ok || !res.body) throw new Error(`server said ${res.status}`);
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -285,9 +293,11 @@ async function ask(text, opts = {}) {
     fillExchange(ex, r);
     banner(r.error || '');
   } catch (e) {
-    fillExchange(ex, { reply: `Couldn't reach the server: ${e.message}`, cards: [], mode: 'error' });
+    if (e.name === 'AbortError') fillExchange(ex, { reply: shown ? `${shown.trim()} …` : '(interrupted)', cards: [], mode: 'direct' });
+    else fillExchange(ex, { reply: `Couldn't reach the server: ${e.message}`, cards: [], mode: 'error' });
   } finally {
     busy = false;
+    Voice.abortAnswer = null;
     if (!Voice.on) setReactor('idle');
   }
   return r;
@@ -355,6 +365,35 @@ function renderCard(c) {
     ${c.foot ? `<div class="cfoot">${esc(c.foot)}</div>` : ''}
     ${actions ? `<div class="cactions">${actions}</div>` : ''}
   </div>`;
+}
+
+// Spend is estimated server-side from every paid call; this just shows it.
+function warnBudgetOnce(u) {
+  const key = 'jarvis.budgetWarned.' + new Date().toISOString().slice(0, 10);
+  try { if (localStorage.getItem(key)) return; localStorage.setItem(key, '1'); } catch { /* show it anyway */ }
+  banner(`Today's estimated spend ($${u.today.usd.toFixed(2)}) has passed your $${u.budget_usd} daily budget. `
+    + 'JARVIS still works; set JARVIS_DAILY_BUDGET in .env to change the limit.');
+}
+
+async function showSpend() {
+  let u;
+  try { u = (await api('/api/status')).usage; } catch (e) { return banner(`Couldn't read spend: ${e.message}`); }
+  const money = x => (x > 0 && x < 0.01 ? 'under 1¢' : `$${x.toFixed(2)}`), n = x => Math.round(x).toLocaleString();
+  const rows = (t, label) => [
+    { text: `${label}: ${money(t.usd)} on Claude`, tag: label === 'Today' ? 'today' : 'month',
+      sub: `${n(t.calls)} calls · ${n(t.input)} in / ${n(t.output)} out tokens · ${n(t.cache_read)} cached · ${n(t.searches)} web searches` },
+    { text: `${label}: ${n(t.tts_credits)} ElevenLabs credits`,
+      sub: `${n(t.tts_chars)} characters spoken · ${(t.stt_seconds / 60).toFixed(1)} min of you transcribed` },
+  ];
+  const ex = addExchange('Spend', true);
+  fillExchange(ex, {
+    mode: 'direct',
+    reply: `About ${money(u.today.usd)} on Claude today, ${money(u.month.usd)} this month.`
+      + (u.over_budget ? ` That's past your $${u.budget_usd} daily budget.` : ''),
+    cards: [{ kind: 'spend', title: `Spend · estimates · budget $${u.budget_usd}/day`, actions: [],
+              rows: [...rows(u.today, 'Today'), ...rows(u.month, u.month_label)],
+              foot: u.note + ' The free ElevenLabs tier is 10,000 credits a month.' }],
+  });
 }
 
 // Memory is read straight from memory/: no model call, nothing spoken.
@@ -487,6 +526,7 @@ async function voiceStart() {
   if (!await openMic()) return;
   Voice.on = true;
   listenAgain(0);
+  Wake.load().catch(() => { /* barge-in by voice just isn't available; Space/Esc still work */ });
 }
 
 // End the conversation: back to standby if "hey Jarvis" is armed, otherwise mic off.
@@ -545,11 +585,15 @@ function chime() {
   });
 }
 
-Wake.onWake = () => {
-  if (Voice.state !== 'standby') return;
-  chime();
-  Voice.on = true;
-  listenAgain(300);                    // stay deaf through the chime
+Wake.onWake = score => {
+  if (Voice.state === 'standby') {
+    chime();
+    Voice.on = true;
+    listenAgain(300);                  // stay deaf through the chime
+  } else if (Voice.state === 'speaking' && score >= BARGE_IN_THRESHOLD) {
+    chime();
+    interrupt();                       // endTurn resumes listening once the reply has stopped
+  }
 };
 
 function rms(analyser) {
@@ -575,7 +619,10 @@ function onAudioBlock(e) {
   const lvl = Math.sqrt(s / d.length), now = performance.now();
   Voice.blockMax = Math.max(Voice.blockMax || 0, lvl);
   Voice.peak = Math.max(Voice.peak, lvl);
-  if (Voice.state === 'standby') { Wake.feed(d, e.inputBuffer.sampleRate); return; }
+  // The wake detector hears everything while the mic is open, so it's primed the moment it's needed;
+  // Wake.onWake only acts on standby (start talking) or while JARVIS speaks (cut in).
+  Wake.feed(d, e.inputBuffer.sampleRate);
+  if (Voice.state === 'standby') return;
   if (Voice.state !== 'listening' || now < Voice.deafUntil) return;
   if (lvl > SPEECH_LEVEL) {
     if (!Voice.speechStart) Voice.speechStart = now;
@@ -661,10 +708,11 @@ async function endTurn() {
 // while the current one plays), played back to back. Each request carries what was just said
 // so the joins sound like one delivery.
 const Speech = { queue: [], chain: Promise.resolve(), playing: false, said: '', chars: 0, cut: false,
-                 cancelled: false, idle: null };
+                 cancelled: false, idle: null, gen: 0 };   // gen: which reply the queue belongs to
 
 function speechReset() {
-  Object.assign(Speech, { queue: [], chain: Promise.resolve(), said: '', chars: 0, cut: false, cancelled: false });
+  Object.assign(Speech, { queue: [], chain: Promise.resolve(), said: '', chars: 0, cut: false, cancelled: false,
+                          playing: false, gen: Speech.gen + 1 });
 }
 
 function speechClear() {                 // drop what's queued; new sentences may still follow
@@ -672,9 +720,20 @@ function speechClear() {                 // drop what's queued; new sentences ma
   Voice.stopSpeaking?.();
 }
 
-function interrupt() {                   // barge-in: stop now and ignore the rest of this reply
+function stopSpeech() {                  // silence this reply now; its text keeps arriving on screen
   Speech.cancelled = true;
   speechClear();
+  // Release anyone waiting for the reply to finish right away, rather than after the audio
+  // that's still being generated arrives and gets thrown away.
+  Speech.playing = false;
+  const idle = Speech.idle;
+  Speech.idle = null;
+  idle?.();
+}
+
+function interrupt() {                   // barge-in: stop talking and stop waiting for the rest of the answer
+  stopSpeech();
+  Voice.abortAnswer?.();
 }
 
 function enqueueSpeech(text) {
@@ -689,11 +748,15 @@ function enqueueSpeech(text) {
 }
 
 async function playQueue() {
+  const gen = Speech.gen;
   Speech.playing = true;
   while (Speech.queue.length) {
     const blob = await Speech.queue.shift();
-    if (blob && !Speech.cancelled) await playBlob(blob);
+    if (gen !== Speech.gen) return;       // a newer reply owns the queue now
+    if (Speech.cancelled) break;          // stopped: fall through so whoever's waiting is released
+    if (blob) await playBlob(blob);
   }
+  if (gen !== Speech.gen) return;
   Speech.playing = false;
   const idle = Speech.idle;
   Speech.idle = null;
@@ -742,8 +805,8 @@ async function playBlob(blob) {
     // arrive. Never leave the loop stuck in "speaking".
     const noStart = setTimeout(() => {
       banner("Reply audio didn't start (is the JARVIS tab in the background?). The reply is on screen.");
-      Speech.cancelled = true;         // don't wait this long again for every remaining sentence
       finish();
+      stopSpeech();                    // don't wait this long again for every remaining sentence
     }, PLAY_START_TIMEOUT_MS);
     const finish = () => {
       if (settled) return;
@@ -803,6 +866,7 @@ function bindUI() {
       }
       if (a === 'google') return window.open('/oauth/start', '_blank', 'noopener');
     }
+    if (e.target.closest('#spend-chip')) return showSpend();
     if (e.target.closest('#google-chip')) {
       if (STATUS?.google.connected) {
         await post('/api/google/disconnect'); refreshStatus();
@@ -842,7 +906,7 @@ function bindUI() {
     Voice.muted = !Voice.muted;
     $('#mute').classList.toggle('live', Voice.muted);
     $('#mute').textContent = Voice.muted ? 'Muted' : 'Mute';
-    if (Voice.muted) interrupt();
+    if (Voice.muted) stopSpeech();
   });
 
   document.addEventListener('keydown', e => {

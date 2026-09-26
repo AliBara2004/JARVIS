@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 
 import data  # noqa: F401 — loads .env
+import usage
 
 API = "https://api.elevenlabs.io/v1"
 # Multilingual v2 sounds the most natural; eleven_flash_v2_5 is faster and half the credits but flatter.
@@ -71,11 +72,13 @@ def tts(text, previous_text=""):
                                                "Accept": "audio/mpeg"})
     try:
         audio = _send(request(_voice_id()), "tts")
+        usage.record_tts(len(text), TTS_MODEL)
         _last_error["tts"] = ""
     except VoiceError as e:
         if "voice not found" not in str(e):
             raise
         audio = _send(request(FALLBACK_VOICE), "tts")
+        usage.record_tts(len(text), TTS_MODEL)
         _last_error["tts"] = "Your ELEVENLABS_VOICE_ID wasn't found, so I'm using the built-in George voice. Fix the ID in .env."
     return audio
 
@@ -99,6 +102,8 @@ def stt(audio, mime="audio/webm"):
                                  headers={"xi-api-key": _key(),
                                           "Content-Type": f"multipart/form-data; boundary={boundary}"})
     res = json.loads(_send(req, "stt"))
+    ends = [w.get("end") for w in res.get("words") or [] if isinstance(w.get("end"), (int, float))]
+    usage.record_stt(max(ends) if ends else 0)       # length of speech heard; Scribe bills per audio time
     _last_error["stt"] = ""
     return (res.get("text") or "").strip()
 

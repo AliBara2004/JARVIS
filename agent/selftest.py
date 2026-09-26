@@ -55,8 +55,12 @@ check("No API key names in browser code", not leaks, str(leaks))
 
 WRITE = re.compile(r"open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
-check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token) and market.py (its cache) write files",
-      writers == ["data.py", "google.py", "market.py", "memory.py"], f"writers: {writers}")
+check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache) and "
+      "usage.py (the spend log) write files",
+      writers == ["data.py", "google.py", "market.py", "memory.py", "usage.py"], f"writers: {writers}")
+check("usage.py only writes data/usage.json", 'FILE = data.ROOT / "data" / "usage.json"' in src(ROOT / "agent" / "usage.py"))
+check("Every paid call is counted (llm + voice report usage)",
+      src(ROOT / "agent" / "llm.py").count("usage.record_llm(") == 2 and src(ROOT / "agent" / "voice.py").count("usage.record_") == 3)
 check("market.py only writes inside data/cache", 'CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"'
       in src(ROOT / "agent" / "market.py") and src(ROOT / "agent" / "market.py").count("write_text") == 1)
 check("Vault and memory writes use exclusive-create (can't overwrite)",

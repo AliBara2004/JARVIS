@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 import data  # noqa: F401 — loads .env before the constants below are read
+import usage
 
 API = "https://api.anthropic.com/v1"
 MODEL = os.environ.get("JARVIS_MODEL", "claude-opus-5")
@@ -75,7 +76,9 @@ def _body(system, messages, tools, max_tokens, effort):
 
 def call(system, messages, tools=None, max_tokens=4000, effort=None):
     with _open(_body(system, messages, tools, max_tokens, effort)) as r:
-        return json.loads(r.read())
+        resp = json.loads(r.read())
+    usage.record_llm(MODEL, resp.get("usage"))
+    return resp
 
 
 def stream(system, messages, tools=None, max_tokens=4000, effort=None, on_text=None):
@@ -85,13 +88,15 @@ def stream(system, messages, tools=None, max_tokens=4000, effort=None, on_text=N
     body = _body(system, messages, tools, max_tokens, effort)
     body["stream"] = True
     try:
-        return _read_stream(_open(body), on_text)
+        resp = _read_stream(_open(body), on_text)
     except (TimeoutError, ConnectionError, OSError) as e:
         raise LLMError(f"connection dropped mid-reply: {e}")
+    usage.record_llm(MODEL, resp["usage"])
+    return resp
 
 
 def _read_stream(resp, on_text):
-    blocks, stop = {}, None
+    blocks, stop, used = {}, None, {}
     with resp as r:
         for raw in r:
             line = raw.decode("utf-8").strip()
@@ -99,7 +104,9 @@ def _read_stream(resp, on_text):
                 continue
             ev = json.loads(line[5:])
             kind = ev.get("type")
-            if kind == "content_block_start":
+            if kind == "message_start":
+                used.update(ev.get("message", {}).get("usage") or {})
+            elif kind == "content_block_start":
                 b = dict(ev["content_block"])
                 if b.get("type") == "tool_use":
                     b["_json"] = ""
@@ -126,9 +133,10 @@ def _read_stream(resp, on_text):
                         raise LLMError("tool call arrived malformed")
             elif kind == "message_delta":
                 stop = ev.get("delta", {}).get("stop_reason") or stop
+                used.update({k: v for k, v in (ev.get("usage") or {}).items() if v is not None})
             elif kind == "error":
                 raise LLMError(ev.get("error", {}).get("message", "stream error"))
-    return {"content": [blocks[i] for i in sorted(blocks)], "stop_reason": stop}
+    return {"content": [blocks[i] for i in sorted(blocks)], "stop_reason": stop, "usage": used}
 
 
 def _open(body):
