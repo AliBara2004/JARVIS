@@ -82,6 +82,24 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self):
         return self.headers.get("Host", "") in ALLOWED_HOSTS
 
+    def _stream_ask(self, text):
+        """Newline-delimited JSON events while JARVIS answers, then {"type": "done", ...result}.
+        HTTP/1.0: the response ends when the connection closes, so no chunked encoding needed."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+
+        def emit(ev):
+            self.wfile.write((json.dumps(ev, default=str, ensure_ascii=False) + "\n").encode("utf-8"))
+            self.wfile.flush()
+
+        try:
+            emit({"type": "done", **brain.ask(text, emit)})
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass                                       # the page was closed mid-answer
+
     # ------------------------------------------------------------ GET
     def do_GET(self):
         if not self._host_ok():
@@ -153,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/speak":
             try:
-                audio = voice.tts(str(body.get("text", "")))
+                audio = voice.tts(str(body.get("text", "")), str(body.get("previous_text", ""))[-500:])
             except voice.VoiceError as e:
                 return self._json({"error": str(e)}, 502)
             notice = voice.status()["tts_error"]
@@ -161,6 +179,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/ask":
             return self._json(brain.ask(str(body.get("text", ""))[:4000]))
+        if path == "/api/ask/stream":
+            return self._stream_ask(str(body.get("text", ""))[:4000])
         if path == "/api/confirm":
             return self._json(brain.confirm(str(body.get("id", "")), bool(body.get("ok"))))
         if path == "/api/reset":

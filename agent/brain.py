@@ -78,25 +78,72 @@ def reset():
         _history.clear()
 
 
-def ask(text):
+def ask(text, emit=None):
+    """Answer one turn. If emit is given, progress streams through it as it happens:
+    {"type": "text", "delta"} for the screen, {"type": "sentence", "text"} ready to speak,
+    {"type": "tool", "name"}, and {"type": "reset"} if streamed text is being replaced."""
     text = (text or "").strip()
     if not text:
         return {"reply": "", "cards": [], "mode": "none"}
+    emit = emit or (lambda ev: None)
     with _lock:
-        pend = tools.pending_list()
-        if pend and (CONFIRM.match(text) or CANCEL.match(text)):
-            if len(pend) == 1:
-                return _pack(tools.resolve(pend[0]["id"], bool(CONFIRM.match(text))), "direct")
-            return {"reply": f"There are {len(pend)} things waiting. Tap the one you mean.", "cards": [],
-                    "mode": "direct"}
-        if not llm.available():
-            return fallback(text)
-        try:
-            return _model_turn(text)
-        except llm.LLMError as e:
-            r = fallback(text)
-            r["error"] = f"Model call failed ({e}). Answered by keyword routing."
-            return r
+        r = _answer(text, emit)
+    if r.get("mode") != "model" and r.get("reply"):   # non-streamed paths: send the whole reply at once
+        emit({"type": "text", "delta": r["reply"]})
+        emit({"type": "sentence", "text": r["reply"]})
+    return r
+
+
+def _answer(text, emit):
+    pend = tools.pending_list()
+    if pend and (CONFIRM.match(text) or CANCEL.match(text)):
+        if len(pend) == 1:
+            return _pack(tools.resolve(pend[0]["id"], bool(CONFIRM.match(text))), "direct")
+        return {"reply": f"There are {len(pend)} things waiting. Tap the one you mean.", "cards": [],
+                "mode": "direct"}
+    if not llm.available():
+        return fallback(text)
+    try:
+        return _model_turn(text, emit)
+    except llm.LLMError as e:
+        emit({"type": "reset"})
+        r = fallback(text)
+        r["error"] = f"Model call failed ({e}). Answered by keyword routing."
+        return r
+
+
+# ------------------------------------------------------------------ sentences for speech
+SPEAK_FIRST_MIN = 12    # the first chunk goes out as soon as it's a sentence: that's what cuts the wait
+SPEAK_NEXT_MIN = 60     # later chunks group short sentences, which sounds smoother than one-by-one
+_BOUNDARY = re.compile(r"[.!?…][\"')\]]?\s|\n\s*\n")
+
+
+class Sentences:
+    """Cuts streamed text into speakable chunks at sentence ends."""
+
+    def __init__(self, emit):
+        self.emit, self.buf, self.first = emit, "", True
+
+    def feed(self, delta):
+        self.buf += delta
+        while True:
+            need = SPEAK_FIRST_MIN if self.first else SPEAK_NEXT_MIN
+            cut = next((m.end() for m in _BOUNDARY.finditer(self.buf) if len(self.buf[:m.end()].strip()) >= need),
+                       None)
+            if cut is None:
+                return
+            self._send(self.buf[:cut])
+            self.buf = self.buf[cut:]
+
+    def flush(self):
+        self._send(self.buf)
+        self.buf = ""
+
+    def _send(self, chunk):
+        chunk = chunk.strip()
+        if chunk:
+            self.emit({"type": "sentence", "text": chunk})
+            self.first = False
 
 
 def confirm(pid, ok):
@@ -110,27 +157,43 @@ def _pack(res, mode):
 
 
 # ------------------------------------------------------------------ model
-def _model_turn(text):
+def _model_turn(text, emit):
     user = {"role": "user", "content": f"[{clock.stamp()} · {data.mode()} data]\n{text}"}
     msgs = [m for turn in _history for m in turn] + [user]
     turn, cards, notes, used, written = [user], [], [], [], []
     changed = False
-    reply = ""
+    spoken = []                      # every text block this turn, in order: what was shown and said
+    speech = Sentences(emit)
+    sep = {"pending": False}         # a space before the next round's first words, if earlier rounds spoke
+
+    def on_text(delta):
+        if sep["pending"]:
+            emit({"type": "text", "delta": " "})
+            sep["pending"] = False
+        emit({"type": "text", "delta": delta})
+        speech.feed(delta)
+
     for _ in range(MAX_TOOL_ROUNDS):
-        resp = llm.call(system_blocks(), msgs, tools.SPECS)
+        sep["pending"] = bool(spoken)
+        resp = llm.stream(system_blocks(), msgs, tools.SPECS, on_text=on_text)
+        speech.flush()
         if resp.get("stop_reason") == "refusal":
-            return {"reply": "I can't help with that one.", "cards": cards, "notes": notes, "mode": "model",
+            emit({"type": "reset"})
+            return {"reply": "I can't help with that one.", "cards": cards, "notes": notes, "mode": "direct",
                     "tools": used, "pending": tools.pending_list()}
         assistant = {"role": "assistant", "content": resp["content"]}
         msgs.append(assistant)
         turn.append(assistant)
-        reply = llm.text_of(resp["content"]) or reply
+        said = llm.text_of(resp["content"])
+        if said:
+            spoken.append(said)
         if resp.get("stop_reason") != "tool_use":
             break
         results = []
         for b in resp["content"]:
             if b.get("type") != "tool_use":
                 continue
+            emit({"type": "tool", "name": b["name"]})
             if _write_blocked(b["name"], text, used):
                 r = tools.result("", [], {"error": "Refused: you read files, email or web text this turn and Ali "
                                                    "didn't ask to save anything. Writes must come from Ali's own "
@@ -153,16 +216,25 @@ def _model_turn(text):
         turn.append(tr)
     else:
         turn.append({"role": "assistant", "content": [{"type": "text", "text": "(stopped: too many tool calls)"}]})
-        reply = reply or "That took more steps than I allow myself. Ask it a narrower way."
+        if not spoken:
+            spoken.append("That took more steps than I allow myself. Ask it a narrower way.")
+            speech.feed(spoken[-1])
+            speech.flush()
 
     # Never write silently: if the spoken reply didn't say what was written, say it.
+    reply = " ".join(spoken)
+    extra = []
     for kind, what in written:
         if kind == "fact" and not _said(reply, what):
-            reply = (reply + f" I've noted: {what}").strip()
+            extra.append(f"I've noted: {what}")
         if kind == "note":
             title = what.rsplit("/", 1)[-1][11:-3]           # "JARVIS/Ideas/2026-09-26 Title.md" → "Title"
             if not _said(reply, title):
-                reply = (reply + f" Saved \"{title}\" in {what.rsplit('/', 1)[0]}.").strip()
+                extra.append(f"Saved \"{title}\" in {what.rsplit('/', 1)[0]}.")
+    for line in extra:
+        emit({"type": "text", "delta": " " + line})
+        emit({"type": "sentence", "text": line})
+        reply = (reply + " " + line).strip()
 
     _history.append(turn)
     del _history[:-HISTORY_TURNS]

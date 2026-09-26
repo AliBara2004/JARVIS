@@ -62,7 +62,7 @@ def check():
         _fail(f"unreachable: {e.reason}")
 
 
-def call(system, messages, tools=None, max_tokens=4000, effort=None):
+def _body(system, messages, tools, max_tokens, effort):
     body = {
         "model": MODEL, "max_tokens": max_tokens, "system": system, "messages": messages,
         "thinking": {"type": "adaptive"},
@@ -70,6 +70,69 @@ def call(system, messages, tools=None, max_tokens=4000, effort=None):
     }
     if tools:
         body["tools"] = tools
+    return body
+
+
+def call(system, messages, tools=None, max_tokens=4000, effort=None):
+    with _open(_body(system, messages, tools, max_tokens, effort)) as r:
+        return json.loads(r.read())
+
+
+def stream(system, messages, tools=None, max_tokens=4000, effort=None, on_text=None):
+    """Same result as call(), but text reaches on_text(delta) as it's generated.
+    Rebuilds every content block (thinking + signature, text, tool_use) exactly, so the
+    message can go back into the conversation unchanged."""
+    body = _body(system, messages, tools, max_tokens, effort)
+    body["stream"] = True
+    try:
+        return _read_stream(_open(body), on_text)
+    except (TimeoutError, ConnectionError, OSError) as e:
+        raise LLMError(f"connection dropped mid-reply: {e}")
+
+
+def _read_stream(resp, on_text):
+    blocks, stop = {}, None
+    with resp as r:
+        for raw in r:
+            line = raw.decode("utf-8").strip()
+            if not line.startswith("data:"):
+                continue
+            ev = json.loads(line[5:])
+            kind = ev.get("type")
+            if kind == "content_block_start":
+                b = dict(ev["content_block"])
+                if b.get("type") == "tool_use":
+                    b["_json"] = ""
+                blocks[ev["index"]] = b
+            elif kind == "content_block_delta":
+                b, d = blocks[ev["index"]], ev["delta"]
+                if d["type"] == "text_delta":
+                    b["text"] = b.get("text", "") + d["text"]
+                    if on_text:
+                        on_text(d["text"])
+                elif d["type"] == "thinking_delta":
+                    b["thinking"] = b.get("thinking", "") + d["thinking"]
+                elif d["type"] == "signature_delta":
+                    b["signature"] = b.get("signature", "") + d["signature"]
+                elif d["type"] == "input_json_delta":
+                    b["_json"] += d["partial_json"]
+            elif kind == "content_block_stop":
+                b = blocks[ev["index"]]
+                if b.get("type") == "tool_use":
+                    raw_json = b.pop("_json")
+                    try:
+                        b["input"] = json.loads(raw_json) if raw_json else {}
+                    except json.JSONDecodeError:
+                        raise LLMError("tool call arrived malformed")
+            elif kind == "message_delta":
+                stop = ev.get("delta", {}).get("stop_reason") or stop
+            elif kind == "error":
+                raise LLMError(ev.get("error", {}).get("message", "stream error"))
+    return {"content": [blocks[i] for i in sorted(blocks)], "stop_reason": stop}
+
+
+def _open(body):
+    """POST /v1/messages with retries; returns the open response (caller reads or streams it)."""
     for attempt in range(3):
         if _state["fallbacks"]:
             body["fallbacks"] = "default"
@@ -78,10 +141,9 @@ def call(system, messages, tools=None, max_tokens=4000, effort=None):
         req = urllib.request.Request(f"{API}/messages", data=json.dumps(body).encode(),
                                      headers=_headers(), method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
-                resp = json.loads(r.read())
+            r = urllib.request.urlopen(req, timeout=120)
             _state.update(status="ready", detail="")
-            return resp
+            return r
         except urllib.error.HTTPError as e:
             msg = _msg(e)
             if e.code == 400 and "fallback" in msg.lower() and _state["fallbacks"]:

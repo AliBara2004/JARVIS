@@ -13,7 +13,10 @@ import urllib.request
 import data  # noqa: F401 — loads .env
 
 API = "https://api.elevenlabs.io/v1"
-TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5")   # fast and half the credits of v2
+# Multilingual v2 sounds the most natural; eleven_flash_v2_5 is faster and half the credits but flatter.
+TTS_MODEL = os.environ.get("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
+# Lower stability = more expression (too low wanders); style adds delivery; speaker boost firms up the voice.
+VOICE_SETTINGS = {"stability": 0.4, "similarity_boost": 0.8, "style": 0.25, "use_speaker_boost": True}
 STT_MODEL = "scribe_v1"
 MAX_SPEAK_CHARS = 1200             # longer replies are spoken up to here; the screen has the rest
 FALLBACK_VOICE = "JBFqnCBsd6RMkjVDRZzb"   # ElevenLabs premade "George" (British), used if the configured ID 404s
@@ -50,14 +53,17 @@ def speakable(text):
     return t
 
 
-def tts(text):
+def tts(text, previous_text=""):
     if not _key() or not _voice_id():
         raise VoiceError("ElevenLabs key or voice ID missing in .env")
     text = speakable(text)
     if not text:
         raise VoiceError("Nothing to say")
-    body = json.dumps({"text": text, "model_id": TTS_MODEL,
-                       "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}).encode()
+    req_body = {"text": text, "model_id": TTS_MODEL, "voice_settings": VOICE_SETTINGS}
+    if previous_text.strip():
+        # What was just said, so a reply spoken sentence-by-sentence still flows as one delivery.
+        req_body["previous_text"] = speakable(previous_text)[-500:]
+    body = json.dumps(req_body).encode()
     def request(vid):
         return urllib.request.Request(f"{API}/text-to-speech/{vid}?output_format=mp3_44100_128",
                                       data=body, method="POST",

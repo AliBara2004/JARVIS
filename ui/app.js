@@ -21,6 +21,7 @@ const IDLE_RESTART_MS = 15000;   // throw away silent recordings older than this
 const LEVEL_EVERY_MS = 50;       // setInterval, not requestAnimationFrame: keeps listening in a background tab
 const ECHO_GRACE_MS = 350;       // stay deaf this long after JARVIS stops talking
 const DEAD_MIC_MS = 4000;        // a mic reporting pure silence this long is muted or the wrong device
+const MAX_SPOKEN_CHARS = 1200;   // a reply longer than this is spoken up to here; the screen has the rest
 const PLAY_START_TIMEOUT_MS = 5000;  // reply audio that hasn't started by now is abandoned (text stays on screen)
 const CONVO_IDLE_MS = 20000;     // with "hey Jarvis" armed: this long without you speaking → back to standby
 
@@ -233,16 +234,52 @@ async function reloadGraph() {
   } catch (e) { banner(`Couldn't refresh the graph: ${e.message}`); }
 }
 
-async function ask(text) {
+const TOOL_CAPTIONS = {
+  search_brain: 'Checking your notes…', research_web: 'Researching…', read_inbox: 'Reading your inbox…',
+  brief_me: 'Pulling your day together…', plan_day: 'Planning your day…', find_niches: 'Ranking niches…',
+  draft_message: 'Drafting…', draft_script: 'Writing the script…', write_note: 'Saving to Obsidian…',
+  remember: 'Remembering…', schedule_event: 'Checking your calendar…',
+};
+
+// Streams the answer: text appears as it's written, and with opts.speak each sentence is
+// voiced as soon as it's complete instead of after the whole reply.
+async function ask(text, opts = {}) {
   text = text.trim();
   if (!text || busy) return null;
   busy = true;
   $('#q').value = '';
   const ex = addExchange(text);
   setReactor('thinking');
-  let r = null;
+  let r = null, shown = '';
+  const sayEl = () => {
+    const j = ex.querySelector('.jarvis');
+    if (j.classList.contains('pending')) { j.classList.remove('pending'); j.innerHTML = '<p class="say"></p>'; }
+    return j.querySelector('.say');
+  };
   try {
-    r = await post('/api/ask', { text });
+    const res = await fetch('/api/ask/stream', { method: 'POST', body: JSON.stringify({ text }),
+      headers: { 'Content-Type': 'application/json', 'X-Jarvis': '1' } });
+    if (!res.ok || !res.body) throw new Error(`server said ${res.status}`);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === 'text') { shown += ev.delta; sayEl().textContent = shown; }
+        else if (ev.type === 'sentence') { if (opts.speak) enqueueSpeech(ev.text); }
+        else if (ev.type === 'tool') caption(TOOL_CAPTIONS[ev.name] || 'Working…', 'dim');
+        else if (ev.type === 'reset') { shown = ''; speechClear(); }
+        else if (ev.type === 'done') r = ev;
+      }
+    }
+    if (!r) throw new Error('the reply was cut off');
     if (r.graph_changed) await reloadGraph();
     fillExchange(ex, r);
     banner(r.error || '');
@@ -453,7 +490,7 @@ async function voiceStart() {
 
 // End the conversation: back to standby if "hey Jarvis" is armed, otherwise mic off.
 function voiceStop() {
-  if (Voice.stopSpeaking) Voice.stopSpeaking();
+  interrupt();
   if (Voice.rec && Voice.rec.state !== 'inactive') { Voice.rec.onstop = null; Voice.rec.stop(); }
   Voice.on = false;
   if (Voice.armed && Voice.stream) return standby();
@@ -612,31 +649,90 @@ async function endTurn() {
   }
   if (!text || !/[a-z0-9]/i.test(text)) { caption("Didn't catch that.", 'dim'); return listenAgain(); }
   caption(`“${text}”`, 'said');
-  const r = await ask(text);
-  if (r && r.reply && !Voice.muted && Voice.on) await speak(r.reply);
+  speechReset();
+  await ask(text, { speak: !Voice.muted && Voice.on });   // sentences start playing while the rest streams in
+  await speechDone();
   listenAgain();
 }
 
-async function speak(text) {
-  let blob;
+// ---------------------------------------------------------------- speech queue
+// Sentences are voiced as they arrive: one TTS request at a time (so the next is being made
+// while the current one plays), played back to back. Each request carries what was just said
+// so the joins sound like one delivery.
+const Speech = { queue: [], chain: Promise.resolve(), playing: false, said: '', chars: 0, cut: false,
+                 cancelled: false, idle: null };
+
+function speechReset() {
+  Object.assign(Speech, { queue: [], chain: Promise.resolve(), said: '', chars: 0, cut: false, cancelled: false });
+}
+
+function speechClear() {                 // drop what's queued; new sentences may still follow
+  Speech.queue = [];
+  Voice.stopSpeaking?.();
+}
+
+function interrupt() {                   // barge-in: stop now and ignore the rest of this reply
+  Speech.cancelled = true;
+  speechClear();
+}
+
+function enqueueSpeech(text) {
+  if (Speech.cancelled || Speech.cut || !text.trim()) return;
+  if (Speech.chars + text.length > MAX_SPOKEN_CHARS) { text = 'The rest is on screen.'; Speech.cut = true; }
+  Speech.chars += text.length;
+  const previous = Speech.said.slice(-500);
+  Speech.said += ' ' + text;
+  const audio = Speech.chain = Speech.chain.then(() => fetchSpeech(text, previous));
+  Speech.queue.push(audio);
+  if (!Speech.playing) playQueue();
+}
+
+async function playQueue() {
+  Speech.playing = true;
+  while (Speech.queue.length) {
+    const blob = await Speech.queue.shift();
+    if (blob && !Speech.cancelled) await playBlob(blob);
+  }
+  Speech.playing = false;
+  const idle = Speech.idle;
+  Speech.idle = null;
+  idle?.();
+}
+
+function speechDone() {
+  return Speech.playing ? new Promise(res => { Speech.idle = res; }) : Promise.resolve();
+}
+
+async function fetchSpeech(text, previous) {
+  if (Speech.cancelled) return null;
   try {
-    const r = await fetch('/api/speak', { method: 'POST', body: JSON.stringify({ text }),
+    const r = await fetch('/api/speak', { method: 'POST', body: JSON.stringify({ text, previous_text: previous }),
       headers: { 'Content-Type': 'application/json', 'X-Jarvis': '1' } });
     if (!r.ok) throw new Error((await r.json()).error || r.status);
     const notice = r.headers.get('X-Voice-Notice');
     if (notice) banner(notice);
-    blob = await r.blob();
+    return await r.blob();
   } catch (e) {
     banner(`Voice output failed: ${e.message}. The reply is on screen.`);
-    return;
+    return null;
   }
+}
+
+async function playBlob(blob) {
   const audio = new Audio(URL.createObjectURL(blob));
-  if (Voice.ctx) {
-    const src = Voice.ctx.createMediaElementSource(audio);
-    Voice.out = Voice.ctx.createAnalyser();
-    Voice.out.fftSize = 1024;
-    src.connect(Voice.out); Voice.out.connect(Voice.ctx.destination);
-  }
+  // Play the voice straight to the speakers, not through the mic's audio graph: that graph's
+  // ScriptProcessor stalls whenever the page is busy, which made speech choppy. The reactor
+  // only measures a copy (captureStream; browsers without it just skip the meter).
+  audio.addEventListener('playing', () => {
+    try {
+      const copy = audio.captureStream?.();
+      if (copy && Voice.ctx && copy.getAudioTracks().length) {
+        Voice.out = Voice.ctx.createAnalyser();
+        Voice.out.fftSize = 1024;
+        Voice.ctx.createMediaStreamSource(copy).connect(Voice.out);
+      }
+    } catch { /* the level meter is cosmetic */ }
+  }, { once: true });
   setVoiceState('speaking');
   caption('');
   await new Promise(done => {
@@ -645,6 +741,7 @@ async function speak(text) {
     // arrive. Never leave the loop stuck in "speaking".
     const noStart = setTimeout(() => {
       banner("Reply audio didn't start (is the JARVIS tab in the background?). The reply is on screen.");
+      Speech.cancelled = true;         // don't wait this long again for every remaining sentence
       finish();
     }, PLAY_START_TIMEOUT_MS);
     const finish = () => {
@@ -672,7 +769,7 @@ async function speak(text) {
 
 function micButton() {
   if (!Voice.on) return voiceStart();
-  if (Voice.state === 'speaking') { Voice.stopSpeaking?.(); return; }   // barge-in; endTurn resumes listening
+  if (Voice.state === 'speaking') { interrupt(); return; }   // barge-in; endTurn resumes listening
   voiceStop();
 }
 
@@ -743,7 +840,7 @@ function bindUI() {
     Voice.muted = !Voice.muted;
     $('#mute').classList.toggle('live', Voice.muted);
     $('#mute').textContent = Voice.muted ? 'Muted' : 'Mute';
-    if (Voice.muted) Voice.stopSpeaking?.();
+    if (Voice.muted) interrupt();
   });
 
   document.addEventListener('keydown', e => {
@@ -753,12 +850,12 @@ function bindUI() {
     else if (e.key === ' ' && !typing && !onButton) {
       e.preventDefault();
       if (!Voice.on) voiceStart();
-      else if (Voice.state === 'speaking') Voice.stopSpeaking?.();      // barge in
+      else if (Voice.state === 'speaking') interrupt();                  // barge in
       else if (Voice.state === 'listening' && Voice.heard) endTurn();   // "I'm done", without waiting for silence
     }
     else if (e.key === 'Escape') {
       if (typing) $('#q').blur();
-      if (Voice.on && Voice.state === 'speaking') Voice.stopSpeaking?.();
+      if (Voice.on && Voice.state === 'speaking') interrupt();
       else if (Voice.on) voiceStop();
       Graph.highlight(null); Graph.clear();
     }
