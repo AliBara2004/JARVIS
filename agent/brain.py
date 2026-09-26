@@ -26,8 +26,8 @@ CANCEL = re.compile(r"^\s*(no|nope|cancel|don'?t|stop|scrap that)\b[\s.!]*$", re
 
 
 # Ali asking, in his own words, for something to be kept. Needed for a write after untrusted text was read.
-ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this))\b",
-                           re.I)
+ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this)"
+                           r"|add|mark|move|set|filmed|posted|replied)\b", re.I)
 
 
 def system_blocks():
@@ -98,7 +98,7 @@ def _answer(text, emit):
     pend = tools.pending_list()
     if pend and (CONFIRM.match(text) or CANCEL.match(text)):
         if len(pend) == 1:
-            return _pack(tools.resolve(pend[0]["id"], bool(CONFIRM.match(text))), "direct")
+            return _resolve(pend[0]["id"], bool(CONFIRM.match(text)))
         return {"reply": f"There are {len(pend)} things waiting. Tap the one you mean.", "cards": [],
                 "mode": "direct"}
     if not llm.available():
@@ -148,7 +148,21 @@ class Sentences:
 
 def confirm(pid, ok):
     with _lock:
-        return _pack(tools.resolve(pid, ok), "direct")
+        return _resolve(pid, ok)
+
+
+def _resolve(pid, ok):
+    """Run (or cancel) a pending action Ali confirmed, and put it in the conversation, so follow-ups
+    like "add the first one" can see what came back."""
+    label = next((p["label"] for p in tools.pending_list() if p["id"] == pid), "the pending action")
+    res = tools.resolve(pid, ok)
+    detail = json.dumps(res["data"], default=str, ensure_ascii=False)[:4000] if res.get("data") else ""
+    _history.append([
+        {"role": "user", "content": f"[{clock.stamp()} · {data.mode()} data]\n{'Confirm' if ok else 'Cancel'}: {label}"},
+        {"role": "assistant", "content": [{"type": "text", "text": res["say"] + (f"\n\n(Result: {detail})" if detail else "")}]},
+    ])
+    del _history[:-HISTORY_TURNS]
+    return _pack(res, "direct")
 
 
 def _pack(res, mode):
@@ -204,6 +218,8 @@ def _model_turn(text, emit):
             if isinstance(r["data"], dict):
                 if r["data"].get("remembered"):
                     written.append(("fact", r["data"]["remembered"]))
+                if r["data"].get("marked"):
+                    written.append(("stage", r["data"]["marked"]))
                 if r["data"].get("saved"):
                     written.append(("note", r["data"]["saved"]))
             changed = changed or bool(isinstance(r["data"], dict) and r["data"].get("graph_changed"))
@@ -227,6 +243,8 @@ def _model_turn(text, emit):
     for kind, what in written:
         if kind == "fact" and not _said(reply, what):
             extra.append(f"I've noted: {what}")
+        if kind == "stage" and not _said(reply, what):
+            extra.append(f"Marked {what}.")
         if kind == "note":
             title = what.rsplit("/", 1)[-1][11:-3]           # "JARVIS/Ideas/2026-09-26 Title.md" → "Title"
             if not _said(reply, title):
@@ -255,6 +273,8 @@ SMALL_TALK = [
 ]
 INTENTS = [   # first match wins: the specific market words before the general "brief"
     (r"pre-?session|\bmarkets?\b|red folders?|forex factory|economic calendar|\bnews\b", "market_brief", {}),
+    (r"weekly review|\bmy week\b|review (the|my|this) week|how did (the|my|this) week go", "weekly_review", {}),
+    (r"what should i film|content (board|pipeline)|my videos|video pipeline", "content_board", {}),
     (r"\bbrief\b|what('?s| is) (on )?today|morning update", "brief_me", {}),
     (r"\bplan\b.*\bday\b|\bplan my\b|what should i do", "plan_day", {}),
     (r"\binbox\b|\be-?mail(s|ed)?\b|\bunread\b|who('?s| has)? (wrote|written|messaged)", "read_inbox", {}),

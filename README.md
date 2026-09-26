@@ -55,7 +55,7 @@ It checks every guardrail against the code and costs nothing. It also runs the s
 - Prospects: put `status: contacted`, `status: call booked` or `status: proposal sent` in the frontmatter. That feeds **Brief** ("what slipped") and **Plan** (ranked by what moves money).
 - Tasks: `- [ ] Chase Cobalt Dental 📅 2026-10-01` (the Obsidian Tasks format). Overdue ones show in the brief.
 - Niches: write a score like `→ 12/15` in the note. **Find niches** ranks by it.
-- JARVIS writes **only** into a `JARVIS/` folder in your vault (`Scripts`, `Ideas`, `Journal`, `Notes`), and only new files.
+- JARVIS writes **only** into a `JARVIS/` folder in your vault (`Scripts`, `Ideas`, `Video ideas`, `Journal`, `Notes`, `Prospects`), and only new files.
 
 It reads Markdown, text and PDF. It skips `Templates/`, `.obsidian`, `.git`, `node_modules` and anything over 2 MB. Scanned PDFs have no text layer and are skipped.
 
@@ -73,7 +73,7 @@ A starter vault lives at `C:\Users\abara\Documents\JARVIS Vault`. Open **Start h
 | **Space / Esc / "Hey Jarvis" while it talks** | Interrupt. The mic ignores JARVIS's own voice; only a clear "Hey Jarvis" (stricter threshold, `BARGE_IN_THRESHOLD` in `ui/app.js`) cuts in, and whatever you say next is your new question |
 | **$ today** (chip, top-left) | Estimated spend today; click for today and this month (Claude tokens and searches, ElevenLabs credits). Turns red past `JARVIS_DAILY_BUDGET` (default $2) |
 | **Mute** | JARVIS keeps listening but stops speaking |
-| **Brief / Plan / Market / Memory** | Calendar + unread + what slipped + today's red folders · five things ranked by money · pre-session news and markets · what it remembers about you |
+| **Brief / Plan / Market / Week / Memory** | Calendar + unread + what slipped + today's red folders · five things ranked by money · pre-session news and markets · your week in review · what it remembers about you |
 | **Graph** | Drag to pan, scroll to zoom, drag a node to move it (double-click to release). Click opens a note. Shift-click a second node traces the shortest path. `F` fits |
 
 Voice tuning lives in named constants at the top of `ui/app.js`:
@@ -97,6 +97,11 @@ The wake word's `THRESHOLD` is at the top of `ui/wake.js`. Lower it if it misses
 | write_note | Saves a new note into `JARVIS/` in your vault, when you ask |
 | remember | One fact per dated file in `memory/`, said out loud, loaded into every conversation |
 | market_brief | Pre-session: today's Forex Factory calendar (red folders + medium USD, UK time, flagged near your NY session, with your no-trade windows) and NQ, ES, VIX, dollar, 10-year, oil and gold with NQ's overnight range. **Market** button, or "pre-session brief" |
+| content_board | Your @VideosByAl1 pipeline by stage (idea → scripted → filmed → posted), what's ready to film, and scripts sitting unfilmed. "What should I film this week?" |
+| set_status | "I filmed the ego one" / "Cobalt Dental replied": moves a video or prospect on. Recorded in JARVIS's own log (`data/status_log.json`); your note is untouched. A `status:` you set yourself in Obsidian wins if you saved it more recently |
+| find_prospects | Real businesses in a niche with a concrete reason to need automation (paid web search, asks first). Businesses only, never individuals' contact details |
+| add_prospect | Saves the ones you pick as leads in `JARVIS/Prospects` |
+| weekly_review | Your week: videos filmed and posted, new leads and moves, notes written, spend; what slipped; and the week ahead (diary + red folders). **Week** button |
 | schedule_event | Proposes a calendar event. It's added only when you confirm; nobody is invited |
 
 With no model (no key, no credit, or no connection), JARVIS still routes by keyword and marks every reply **keyword routing · model offline**. Small talk gets talk, not a search result.

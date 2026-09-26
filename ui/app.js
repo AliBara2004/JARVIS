@@ -8,6 +8,8 @@ const EXAMPLES = [
   'Draft a reply to Ben Carter',
   'Book a call with Ben Carter Tuesday at 11',
   'Any red folders today?',
+  'What should I film this week?',
+  'Find me five dental clinics that could use automation',
 ];
 const EXAMPLE_EVERY = 4000;
 const CONVO_KEEP = 8;            // exchanges kept on screen
@@ -246,6 +248,8 @@ const TOOL_CAPTIONS = {
   brief_me: 'Pulling your day together…', plan_day: 'Planning your day…', find_niches: 'Ranking niches…',
   draft_message: 'Drafting…', draft_script: 'Writing the script…', write_note: 'Saving to Obsidian…',
   remember: 'Remembering…', schedule_event: 'Checking your calendar…', market_brief: 'Checking the calendar and markets…',
+  content_board: 'Checking your video pipeline…', set_status: 'Updating…', find_prospects: 'Searching for businesses…',
+  add_prospect: 'Adding the prospect…', weekly_review: 'Reviewing your week…',
 };
 
 // Streams the answer: text appears as it's written, and with opts.speak each sentence is
@@ -844,6 +848,7 @@ function bindUI() {
   $('#brief').addEventListener('click', () => ask('Brief me.'));
   $('#plan').addEventListener('click', () => ask('Plan my day.'));
   $('#market').addEventListener('click', () => ask('Pre-session brief: news and markets.'));
+  $('#week').addEventListener('click', () => ask('Weekly review.'));
   $('#memory').addEventListener('click', showMemory);
   $('#new-chat').addEventListener('click', async () => {
     await post('/api/reset');

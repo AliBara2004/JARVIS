@@ -20,6 +20,7 @@ except Exception:
 import brain  # noqa: E402
 import data  # noqa: E402
 import memory  # noqa: E402
+import status  # noqa: E402
 import tools  # noqa: E402
 
 ROOT = data.ROOT
@@ -55,9 +56,11 @@ check("No API key names in browser code", not leaks, str(leaks))
 
 WRITE = re.compile(r"open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
-check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache) and "
-      "usage.py (the spend log) write files",
-      writers == ["data.py", "google.py", "market.py", "memory.py", "usage.py"], f"writers: {writers}")
+check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache), "
+      "status.py (pipeline log) and usage.py (the spend log) write files",
+      writers == ["data.py", "google.py", "market.py", "memory.py", "status.py", "usage.py"], f"writers: {writers}")
+check("status.py only writes data/status_log.json", 'FILE = data.ROOT / "data" / "status_log.json"'
+      in src(ROOT / "agent" / "status.py"))
 check("usage.py only writes data/usage.json", 'FILE = data.ROOT / "data" / "usage.json"' in src(ROOT / "agent" / "usage.py"))
 check("Every paid call is counted (llm + voice report usage)",
       src(ROOT / "agent" / "llm.py").count("usage.record_llm(") == 2 and src(ROOT / "agent" / "voice.py").count("usage.record_") == 3)
@@ -126,6 +129,16 @@ check("…accepts a paraphrase that keeps the facts", brain._said("Got it: £1,5
                                                                  "I charge £1500 for migrations"))
 check("…but not one with the wrong number", not brain._said("Noted: you charge £2,000 for migrations.",
                                                               "I charge £1500 for migrations"))
+
+print("\nPipelines never edit Ali's notes")
+from types import SimpleNamespace as _N  # noqa: E402
+_n = _N(rel="Content/x.md", meta={"status": "idea"}, mtime=2e9)          # a note saved after any log entry
+check("A note Ali saved after JARVIS's entry keeps Ali's status", status.effective(_n, "idea")[0] == "idea")
+check("set_status rejects stages it doesn't track", "error" in tools.set_status("x", "sent")["data"])
+check("find_prospects asks before spending", tools.WEB_SEARCH != "ask" or
+      tools.find_prospects("dentists")["pending"] is not None)
+for _p in tools.pending_list():
+    tools.resolve(_p["id"], False)
 
 print("\nCalendar needs Ali's confirm")
 before = len(tools.pending_list())

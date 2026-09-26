@@ -14,3 +14,5 @@ __pycache__/
 data/cache/
 data/usage.json
 data/usage.tmp
+data/status_log.json
+data/status_log.tmp

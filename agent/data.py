@@ -73,19 +73,20 @@ def signature():
 
 
 def iter_files():
-    """Yield (root, path, text) for every indexable file. Read-only."""
+    """Yield (root, path, text, mtime) for every indexable file. Read-only."""
     for root in folders():
         if not root.is_dir():
             print(f"[data] folder not found, skipped: {root}")
     for root, p in _walk():
         try:
-            if p.stat().st_size > MAX_BYTES:
+            st = p.stat()
+            if st.st_size > MAX_BYTES:
                 continue
             text = read_text(p)
         except OSError:
             continue
         if text.strip():
-            yield root, p, text
+            yield root, p, text, st.st_mtime
 
 
 def read_text(p):
@@ -208,7 +209,7 @@ def create_event(title, start, minutes, notes=""):
 # write_note() creates a NEW markdown file under <vault>/JARVIS/<folder>/. It opens with mode "x",
 # so it can never overwrite, and there is no edit or delete anywhere in this module.
 NOTES_SUBDIR = "JARVIS"
-NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes")
+NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes", "Video ideas", "Prospects")
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f\[\]#^]')
 
 
@@ -236,6 +237,7 @@ def write_note(folder, title, body, meta):
     sandbox = (root / NOTES_SUBDIR).resolve()
     if sandbox not in p.resolve().parents:
         raise RuntimeError("Refusing to write outside the JARVIS folder.")
+    meta = {"title": title.strip(), **meta}   # the filename carries the date; the note's name doesn't
     fm = "---\n" + "".join(f"{k}: {str(v).replace(chr(10), ' ')}\n" for k, v in meta.items()) + "---\n\n"
     with open(p, "x", encoding="utf-8", newline="\n") as f:
         f.write(fm + f"# {title.strip()}\n\n" + body.strip() + "\n")

@@ -83,3 +83,8 @@ def summary():
     return {"today": t, "month": m, "month_label": month, "budget_usd": DAILY_BUDGET_USD,
             "over_budget": t["usd"] >= DAILY_BUDGET_USD,
             "note": "Estimates from list prices. The bill is at console.anthropic.com and elevenlabs.io."}
+
+
+def since(first_day):
+    """Estimated $ from first_day (YYYY-MM-DD, UK) to today."""
+    return sum(row.get("usd", 0) for d, row in _load()["days"].items() if d >= first_day)

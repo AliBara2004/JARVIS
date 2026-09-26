@@ -31,11 +31,12 @@ def tokens(s):
 
 
 class Note:
-    __slots__ = ("id", "title", "path", "rel", "type", "text", "meta", "links", "tf", "length")
+    __slots__ = ("id", "title", "path", "rel", "type", "text", "meta", "links", "tf", "length", "mtime")
 
     def __init__(self, id, title, path, rel, type, text, meta):
         self.id, self.title, self.path, self.rel = id, title, path, rel
         self.type, self.text, self.meta = type, text, meta
+        self.mtime = 0.0
         self.links = set()
 
 
@@ -52,11 +53,12 @@ class Vault:
     def build(self):
         by_title = {}
         raw_links = []
-        for root, path, text in data.iter_files():
+        for root, path, text, mtime in data.iter_files():
             rel = path.relative_to(root).as_posix()
             meta, body = _frontmatter(text)
             title = meta.get("title") or path.stem
             n = Note(len(self.notes), title, str(path), rel, _type_for(meta, rel), body, meta)
+            n.mtime = mtime
             self.notes.append(n)
             by_title.setdefault(title.lower(), n.id)
             for alias in meta.get("aliases", "").split(","):
