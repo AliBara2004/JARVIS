@@ -85,8 +85,16 @@ async function boot() {
   setInterval(refreshStatus, STATUS_EVERY_MS);
 }
 
+let loadedVersion = null;
 async function refreshStatus() {
-  try { STATUS = await api('/api/status'); renderStatus(STATUS); } catch { return; /* banner shows on next action */ }
+  try { STATUS = await api('/api/status'); renderStatus(STATUS); }
+  catch { setTimeout(refreshStatus, 2000); return; }       // server restarting: check back soon
+  loadedVersion ??= STATUS.code_version;
+  if (STATUS.code_version !== loadedVersion && !busy && Voice.state !== 'speaking') {
+    location.reload();                                     // JARVIS was updated: pick up the new page
+    return;
+  }
+  maybeCheckin();
   // The server re-indexes when notes change in Obsidian; redraw if it has.
   if (GRAPH && STATUS.graph_version !== GRAPH.version && !busy) reloadGraph();
 }
@@ -118,6 +126,7 @@ function renderStatus(s) {
 
   const g = s.google;
   const google = !g.configured ? ['warn', 'Google', 'No Google client in .env']
+    : g.connected && !g.drafts ? ['warn', 'Google · reconnect', 'Connected, but from before Gmail drafts existed. Click to disconnect, then click again to connect and allow drafts.']
     : g.connected ? ['ok', 'Google', 'Connected. Click to disconnect.']
     : ['warn action', 'Google · connect', g.demo ? 'Demo mode uses fixtures; connect now for live mode later.' : 'Click to sign in'];
 
@@ -133,6 +142,9 @@ function renderStatus(s) {
       : s.voice.tts_error || s.voice.stt_error ? ['warn', 'Voice', s.voice.tts_error || s.voice.stt_error]
       : ['ok', 'Voice', 'ElevenLabs speech in and out. Press Mic or Space.']) +
     chip(google, 'google-chip') +
+    (s.telegram.enabled ? chip(s.telegram.error ? ['warn', 'Telegram', s.telegram.error]
+                               : s.telegram.paired ? ['ok', 'Telegram', `Paired with ${s.telegram.name || 'your phone'}. Click to manage.`]
+                               : ['warn action', 'Telegram · pair', 'Click for your pairing code'], 'telegram-chip') : '') +
     chip(spend, 'spend-chip');
   $('#model-badge').hidden = s.model.state === 'ready' || s.model.state === 'unchecked';
   const tips = { '#mic': 'Talk (Space). Esc to stop.', '#mute': 'Keep listening, stop speaking',
@@ -256,10 +268,13 @@ const TOOL_CAPTIONS = {
 // voiced as soon as it's complete instead of after the whole reply.
 async function ask(text, opts = {}) {
   text = text.trim();
-  if (!text || busy) return null;
+  const files = Attach.items.splice(0);
+  if (files.length && !text) text = "What's this? Tell me what matters in it.";
+  if (!text || busy) { Attach.items.unshift(...files); return null; }
   busy = true;
   $('#q').value = '';
-  const ex = addExchange(text);
+  renderTray();
+  const ex = addExchange(text + (files.length ? `  📎 ${files.map(f => f.name).join(', ')}` : ''));
   setReactor('thinking');
   let r = null, shown = '';
   const ctrl = new AbortController();
@@ -270,7 +285,8 @@ async function ask(text, opts = {}) {
     return j.querySelector('.say');
   };
   try {
-    const res = await fetch('/api/ask/stream', { method: 'POST', body: JSON.stringify({ text }), signal: ctrl.signal,
+    const res = await fetch('/api/ask/stream', { method: 'POST', signal: ctrl.signal,
+      body: JSON.stringify({ text, attachments: files.map(f => f.id) }),
       headers: { 'Content-Type': 'application/json', 'X-Jarvis': '1' } });
     if (!res.ok || !res.body) throw new Error(`server said ${res.status}`);
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -359,6 +375,9 @@ function renderCard(c) {
   const actions = c.actions.map(a => {
     if (a.id === 'copy') return `<button class="btn primary" data-action="copy">Copy</button>`;
     if (a.id === 'google-connect') return `<button class="btn primary" data-action="google">Connect Google</button>`;
+    if (a.id === 'telegram-unpair') return `<button class="btn" data-action="telegram-unpair">Unpair</button>`;
+    if (a.id === 'checkin-answer') return `<button class="btn primary" data-action="checkin-answer">Answer</button>`;
+    if (a.id === 'checkin-skip') return `<button class="btn" data-action="checkin-skip">Not tonight</button>`;
     return `<button class="btn ${a.style === 'primary' ? 'primary' : ''}" data-action="${a.style === 'cancel' ? 'cancel' : 'confirm'}" data-pid="${esc(a.id)}">${esc(a.label)}</button>`;
   }).join('');
   return `<div class="card kind-${esc(c.kind)}">
@@ -369,6 +388,59 @@ function renderCard(c) {
     ${c.foot ? `<div class="cfoot">${esc(c.foot)}</div>` : ''}
     ${actions ? `<div class="cactions">${actions}</div>` : ''}
   </div>`;
+}
+
+// ---------------------------------------------------------------- attachments
+// Screenshots, photos and PDFs: attach with 📎, paste (Ctrl+V) or drop. They go with the next
+// question only; the server keeps them in memory until then and never saves them.
+const Attach = { items: [] };          // {id, name, kind, bytes}
+const MAX_ATTACHMENTS = 5;
+
+async function addFiles(list) {
+  for (const f of [...list]) {
+    if (Attach.items.length >= MAX_ATTACHMENTS) { banner(`Up to ${MAX_ATTACHMENTS} files per question.`); break; }
+    try {
+      const r = await fetch('/api/attach', { method: 'POST', body: f, headers: {
+        'Content-Type': f.type || 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name || 'pasted image.png'),
+        'X-Jarvis': '1' } });
+      const j = await r.json();
+      if (!r.ok) { banner(j.error || `Couldn't attach ${f.name}`); continue; }
+      Attach.items.push(j);
+    } catch (e) { banner(`Couldn't attach ${f.name}: ${e.message}`); }
+  }
+  renderTray();
+  $('#q').focus();
+}
+
+function renderTray() {
+  const t = $('#tray');
+  t.innerHTML = Attach.items.map(a =>
+    `<span class="att"><b>${a.kind === 'pdf' ? 'PDF' : 'IMG'}</b> ${esc(a.name)} <button class="link" data-rm="${a.id}" title="Remove">✕</button></span>`).join('');
+  t.hidden = !Attach.items.length;
+  measureInsets();
+}
+
+function bindAttachments() {
+  $('#clip').addEventListener('click', () => $('#file').click());
+  $('#file').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+  $('#tray').addEventListener('click', e => {
+    const id = e.target.dataset?.rm;
+    if (id) { Attach.items = Attach.items.filter(a => a.id !== id); renderTray(); }
+  });
+  document.addEventListener('paste', e => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  });
+  let depth = 0;
+  const zone = $('#dropzone');
+  document.addEventListener('dragenter', e => { if (e.dataTransfer?.types?.includes('Files')) { depth++; zone.hidden = false; } });
+  document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; zone.hidden = true; } });
+  document.addEventListener('dragover', e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+  document.addEventListener('drop', e => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault(); depth = 0; zone.hidden = true;
+    addFiles(e.dataTransfer.files);
+  });
 }
 
 // Spend is estimated server-side from every paid call; this just shows it.
@@ -398,6 +470,44 @@ async function showSpend() {
               rows: [...rows(u.today, 'Today'), ...rows(u.month, u.month_label)],
               foot: u.note + ' The free ElevenLabs tier is 10,000 credits a month.' }],
   });
+}
+
+// Evening check-in: offered once, the first time JARVIS is open after the check-in hour.
+let checkinOffered = false;
+function maybeCheckin() {
+  if (checkinOffered || busy || !STATUS?.checkin?.due) return;
+  checkinOffered = true;
+  const ex = addExchange('Evening check-in', true);
+  fillExchange(ex, { mode: 'direct', reply: STATUS.checkin.question, cards: [{
+    kind: 'checkin', title: 'Evening check-in', rows: [], actions: [{ id: 'checkin-answer' }, { id: 'checkin-skip' }],
+    foot: 'Your answer is saved in your own words to JARVIS/Journal. Talk or type.' }] });
+}
+
+async function answerCheckin(yes, btn) {
+  btn.closest('.card').querySelectorAll('button').forEach(b => { b.disabled = true; });
+  if (!yes) { await post('/api/checkin', { action: 'skip' }); btn.closest('.card').classList.add('done'); return; }
+  const { question } = await post('/api/checkin', { action: 'start' });
+  btn.closest('.card').classList.add('done');
+  $('#q').placeholder = 'Your answer…';
+  $('#q').focus();
+  if (Voice.on && !Voice.muted) { speechReset(); enqueueSpeech(question); }
+}
+
+// Pairing happens here on the PC: the code never leaves this page, so only someone at your PC can pair.
+async function showTelegram() {
+  await refreshStatus();
+  const t = STATUS.telegram, ex = addExchange('Telegram', true);
+  const card = t.paired
+    ? { kind: 'telegram', title: `Telegram · paired with ${t.name || 'your phone'}`, rows: [], actions: [{ id: 'telegram-unpair', label: 'Unpair' }],
+        foot: 'Only this chat is answered. Messages pass through Telegram (not end-to-end encrypted). JARVIS must be running on this PC to reply.' }
+    : { kind: 'telegram', title: 'Telegram · pair your phone', actions: [],
+        rows: [{ text: 'Open your JARVIS bot in Telegram (the one you made with @BotFather)', tag: '1' },
+               { text: `Send:  /pair ${t.pair_code}`, tag: '2', sub: 'or just the 6 digits. The code changes every time JARVIS restarts; 5 wrong tries locks pairing for 10 minutes.' },
+               { text: 'JARVIS replies "Paired." and from then on answers only you', tag: '3' },
+               { text: t.last ? `Last message JARVIS received: ${t.last}` : 'No message received from Telegram yet',
+                 tag: 'check', sub: t.last ? null : 'If you have sent one, JARVIS may have been restarted since: send it again.' }],
+        foot: t.error || 'Just the 6 digits works too. Voice notes work once paired: they are transcribed on this PC via ElevenLabs.' };
+  fillExchange(ex, { mode: 'direct', reply: t.paired ? `Paired with ${t.name || 'your phone'}.` : 'Here is how to pair your phone.', cards: [card] });
 }
 
 // Memory is read straight from memory/: no model call, nothing spoken.
@@ -443,6 +553,38 @@ function setReactor(state) {
   $('#reactor').dataset.state = state;
   $('#reactor-state').textContent = state === 'standby' ? 'STANDBY' : state.toUpperCase();
 }
+
+// ---------------------------------------------------------------- one voice across tabs
+// Two JARVIS tabs with the mic open both hear "Hey Jarvis" and both answer. Only one tab may hold
+// the mic: opening it tells the others to let go.
+const Tabs = (() => {
+  const id = Math.random().toString(36).slice(2);
+  const ch = 'BroadcastChannel' in window ? new BroadcastChannel('jarvis') : null;
+  const answers = [];
+  if (ch) ch.onmessage = ({ data: m }) => {
+    if (m.tab === id) return;
+    if (m.type === 'voice-claim' && Voice.stream) {
+      interrupt();
+      Voice.on = false;
+      Voice.armed = false;                 // this tab only; the saved preference stays
+      closeMic();
+      setVoiceState('idle');
+      caption('Voice moved to your other JARVIS tab', 'dim');
+    }
+    if (m.type === 'who-has-voice') ch.postMessage({ type: 'voice-here', tab: id, has: !!Voice.stream });
+    if (m.type === 'voice-here') answers.push(m.has);
+  };
+  return {
+    claimVoice() { ch?.postMessage({ type: 'voice-claim', tab: id }); },
+    async voiceElsewhere() {
+      if (!ch) return false;
+      answers.length = 0;
+      ch.postMessage({ type: 'who-has-voice', tab: id });
+      await new Promise(r => setTimeout(r, 300));
+      return answers.some(Boolean);
+    },
+  };
+})();
 
 // ---------------------------------------------------------------- voice
 // Three layers:
@@ -508,6 +650,7 @@ async function openMic() {
   Voice.mime = pickMime();
   Voice.onSince = performance.now(); Voice.peak = 0; Voice.warnedDead = false;
   Voice.timer = setInterval(levelTick, LEVEL_EVERY_MS);
+  Tabs.claimVoice();
   if (Voice.ctx.state === 'suspended') {
     // Browsers only start audio after a click on the page. Say so rather than sit deaf.
     banner('Click anywhere on the page to switch the microphone on.');
@@ -715,6 +858,7 @@ const Speech = { queue: [], chain: Promise.resolve(), playing: false, said: '', 
                  cancelled: false, idle: null, gen: 0 };   // gen: which reply the queue belongs to
 
 function speechReset() {
+  Voice.stopSpeaking?.();                // whatever is still playing stops before a new reply starts
   Object.assign(Speech, { queue: [], chain: Promise.resolve(), said: '', chars: 0, cut: false, cancelled: false,
                           playing: false, gen: Speech.gen + 1 });
 }
@@ -844,6 +988,7 @@ function micButton() {
 // ---------------------------------------------------------------- events
 function bindUI() {
   rotatePlaceholder();
+  bindAttachments();
   $('#ask').addEventListener('submit', e => { e.preventDefault(); ask($('#q').value); });
   $('#brief').addEventListener('click', () => ask('Brief me.'));
   $('#plan').addEventListener('click', () => ask('Plan my day.'));
@@ -870,8 +1015,13 @@ function bindUI() {
         return;
       }
       if (a === 'google') return window.open('/oauth/start', '_blank', 'noopener');
+      if (a === 'checkin-answer' || a === 'checkin-skip') return answerCheckin(a === 'checkin-answer', act);
+      if (a === 'telegram-unpair') {
+        await post('/api/telegram/unpair'); act.textContent = 'Unpaired'; act.disabled = true; return refreshStatus();
+      }
     }
     if (e.target.closest('#spend-chip')) return showSpend();
+    if (e.target.closest('#telegram-chip')) return showTelegram();
     if (e.target.closest('#google-chip')) {
       if (STATUS?.google.connected) {
         await post('/api/google/disconnect'); refreshStatus();
@@ -906,7 +1056,13 @@ function bindUI() {
 
   $('#mic').addEventListener('click', micButton);
   $('#wake').addEventListener('click', () => (Voice.armed ? disarm() : arm()));
-  try { if (localStorage.getItem(WAKE_PREF) === '1' && STATUS?.voice.key) arm(); } catch { /* storage blocked */ }
+  try {
+    if (localStorage.getItem(WAKE_PREF) === '1' && STATUS?.voice.key) {
+      Tabs.voiceElsewhere().then(other => other
+        ? caption('"Hey Jarvis" is on in your other JARVIS tab', 'dim')
+        : arm());
+    }
+  } catch { /* storage blocked */ }
   $('#mute').addEventListener('click', () => {
     Voice.muted = !Voice.muted;
     $('#mute').classList.toggle('live', Voice.muted);

@@ -8,6 +8,7 @@
 </head>
 <body>
   <canvas id="graph" aria-label="Knowledge graph"></canvas>
+  <div class="dropzone" id="dropzone" hidden><div>Drop a screenshot, photo or PDF for JARVIS</div></div>
 
   <div id="banner" class="banner" hidden></div>
 
@@ -67,8 +68,11 @@
       <div id="convo-list"></div>
     </div>
     <div class="caption" id="caption" aria-live="polite"></div>
+    <div class="tray" id="tray" hidden></div>
     <form id="ask" autocomplete="off">
       <div class="bars" id="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      <button type="button" class="btn ghost clip" id="clip" title="Attach a screenshot, photo or PDF (or paste / drop one)">📎</button>
+      <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple hidden>
       <input id="q" type="text" placeholder="" aria-label="Ask JARVIS">
       <span class="badge warn" id="model-badge" hidden title="No model: replies come from keyword routing">NO MODEL</span>
       <button type="submit" class="btn primary" title="Send (Enter)">Ask</button>

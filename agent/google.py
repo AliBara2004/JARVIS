@@ -19,7 +19,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TOKEN = ROOT / ".secrets" / "google_token.json"
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",      # drafts only: JARVIS has no send code
           "https://www.googleapis.com/auth/calendar.events"]
+
+
+def has_scope(scope):
+    """Whether the saved sign-in includes a permission (older sign-ins predate drafts)."""
+    try:
+        return scope in json.loads(TOKEN.read_text()).get("scope", "")
+    except (OSError, json.JSONDecodeError):
+        return False
 _pending = {}
 
 
@@ -32,7 +41,10 @@ def configured():
 
 
 def connected():
-    return TOKEN.exists()
+    try:
+        return bool(json.loads(TOKEN.read_text()).get("refresh_token"))
+    except (OSError, json.JSONDecodeError):
+        return False
 
 
 def auth_url(redirect):
@@ -59,8 +71,13 @@ def finish(state, code):
 
 
 def disconnect():
-    if TOKEN.exists():
+    if not TOKEN.exists():
+        return
+    try:
         TOKEN.unlink()
+    except PermissionError:
+        # Older sign-ins were locked read/write only (no delete). Emptying it disconnects just as well.
+        TOKEN.write_text("{}", encoding="utf-8")
 
 
 def _token_request(fields):
@@ -89,7 +106,7 @@ def _save(tok):
     TOKEN.write_text(json.dumps(old), encoding="utf-8")
     if fresh and os.name == "nt":
         subprocess.run(["icacls", str(TOKEN), "/inheritance:r", "/grant:r",
-                        f"{os.environ.get('USERNAME', '')}:(R,W)"], capture_output=True)
+                        f"{os.environ.get('USERNAME', '')}:(R,W,D)"], capture_output=True)
 
 
 def _access_token(force=False):

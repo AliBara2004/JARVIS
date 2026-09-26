@@ -2,18 +2,16 @@
 title JARVIS
 cd /d "%~dp0"
 
-rem Already running? Just open the page instead of starting a second copy.
-netstat -ano | findstr "127.0.0.1:7777" | findstr LISTENING >nul
-if %errorlevel%==0 (
-  start "" http://127.0.0.1:7777
-  exit /b
-)
-
+rem launch.py opens the page if JARVIS is already running the latest code,
+rem restarts it if it is running an older version, and starts it otherwise.
 echo Starting JARVIS. Keep this window open: closing it stops JARVIS.
 echo.
-python agent\main.py
+python agent\launch.py
 
-rem Only reached if JARVIS stops or fails to start: keep the error on screen.
-echo.
-echo JARVIS has stopped.
-pause
+rem A clean exit (replaced by a newer JARVIS, or already running) closes this window.
+rem Anything else keeps the error on screen.
+if errorlevel 1 (
+  echo.
+  echo JARVIS stopped with an error. Send the message above to Claude.
+  pause
+)

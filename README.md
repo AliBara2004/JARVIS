@@ -10,6 +10,8 @@ python agent/main.py
 
 That starts the server at **http://127.0.0.1:7777** and opens it. `Ctrl+C` stops it.
 
+Or double-click the **JARVIS** desktop shortcut (`Start JARVIS.cmd` → `agent/launch.py`). If JARVIS is already running the latest code, it just opens the page. If it's running an older version (the code changed since it started), it restarts it automatically.
+
 ---
 
 ## Setup
@@ -24,7 +26,7 @@ That starts the server at **http://127.0.0.1:7777** and opens it. `Ctrl+C` stops
    | `JARVIS_MODEL` | Which Claude model | Default `claude-opus-5` |
    | `ELEVENLABS_API_KEY` | Voice out (speech) and in (Scribe transcription) | elevenlabs.io → Profile → API Keys. Text-to-speech + speech-to-text permissions are enough |
    | `ELEVENLABS_VOICE_ID` | The voice JARVIS speaks in | elevenlabs.io → Voices → My Voices → ⋯ → Copy voice ID (20 characters). If it's wrong, JARVIS uses the built-in "George" voice and says so |
-   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Read Gmail, add confirmed events to Calendar | Google Cloud Console: new project → enable Gmail API + Google Calendar API → OAuth consent screen (External, add yourself as test user) → Credentials → OAuth client ID → **Desktop app** |
+   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Read Gmail, save drafts you tap, add confirmed events to Calendar | Google Cloud Console: new project → enable Gmail API + Google Calendar API → OAuth consent screen (External, add yourself as test user) → Credentials → OAuth client ID → **Desktop app** |
    | `JARVIS_DEMO` | `1` = invented demo data, `0` = your real notes | Default `1` |
    | `JARVIS_FOLDERS` | Your Obsidian vault path(s), `;`-separated | e.g. `C:\Users\abara\Documents\JARVIS Vault` |
    | `JARVIS_WEB_SEARCH` | `ask` (default), `auto` or `off` | Web search is paid; `ask` makes JARVIS get your OK each time |
@@ -39,6 +41,36 @@ python agent/selftest.py
 ```
 
 It checks every guardrail against the code and costs nothing. It also runs the server checks if JARVIS is up.
+
+## Telegram: JARVIS on your phone
+
+Text or voice-note JARVIS from anywhere, while it's running on your PC. Nothing on your PC is exposed: JARVIS checks Telegram for messages over an outgoing connection.
+
+1. In Telegram, open **@BotFather**, send `/newbot`, and pick a name (e.g. `JARVIS`) and a username ending in `bot` (e.g. `ali_jarvis_bot`).
+2. BotFather replies with a **token**. Put it in `.env` as `TELEGRAM_BOT_TOKEN=…`. Never paste it anywhere else.
+3. Restart JARVIS. A **Telegram · pair** chip appears; click it for your 6-digit code.
+4. In Telegram, open your bot and send `/pair 123456` with your code. From then on it answers **only you**. Other chats are ignored, and 5 wrong codes lock pairing for 10 minutes.
+
+**What works:**
+- Text and voice notes (transcribed via ElevenLabs).
+- ✅/✖ buttons for anything needing your OK.
+- Shortcuts: `/brief /plan /market /week /film`, and `/new` for a fresh conversation.
+- Your phone and PC share one conversation.
+
+**Forwarded messages** are treated as someone else's words: JARVIS discusses them, and nothing is saved or changed from them.
+
+**Worth knowing:**
+- Messages go through Telegram's servers, which aren't end-to-end encrypted.
+- JARVIS must be running for replies.
+- Photos and files aren't supported yet.
+
+## Backing up your notes
+
+Your vault is backed up to a **private** GitHub repo (`JARVIS-vault`), set with `JARVIS_BACKUP_REMOTE` in `.env`.
+- It backs up automatically when notes change (at most every 30 minutes, while JARVIS runs), or when you say "back up my notes".
+- Every backup is kept, so any earlier version of a note can be recovered: on GitHub, open the note, then **History**.
+- JARVIS only ever adds to the history. It never force-pushes, resets or deletes, and the self-test checks that.
+- Git's data lives in the vault's hidden `.git` folder. No files are added among your notes.
 
 ## Demo mode vs your real life
 
@@ -74,6 +106,8 @@ A starter vault lives at `C:\Users\abara\Documents\JARVIS Vault`. Open **Start h
 | **$ today** (chip, top-left) | Estimated spend today; click for today and this month (Claude tokens and searches, ElevenLabs credits). Turns red past `JARVIS_DAILY_BUDGET` (default $2) |
 | **Mute** | JARVIS keeps listening but stops speaking |
 | **Brief / Plan / Market / Week / Memory** | Calendar + unread + what slipped + today's red folders · five things ranked by money · pre-session news and markets · your week in review · what it remembers about you |
+| **📎 / paste / drop** | Show JARVIS a screenshot, photo or PDF (up to 5 per question). It's read once and not kept: the conversation keeps JARVIS's reply, not the file. Text inside files can't make JARVIS save or change anything. On Telegram, just send the photo or PDF |
+| **Evening check-in** | After 7pm, the first time you open JARVIS it asks one question. Your answer is saved in your words to `JARVIS/Journal`. "Not tonight" skips it. `/checkin` on Telegram. Change the hour with `JARVIS_CHECKIN_HOUR` (or `off`) |
 | **Graph** | Drag to pan, scroll to zoom, drag a node to move it (double-click to release). Click opens a note. Shift-click a second node traces the shortest path. `F` fits |
 
 Voice tuning lives in named constants at the top of `ui/app.js`:
@@ -86,13 +120,13 @@ The wake word's `THRESHOLD` is at the top of `ui/wake.js`. Lower it if it misses
 
 | Tool | What it does |
 |---|---|
-| search_brain | A fact from your notes, naming the file(s) it came from |
+| search_brain | A fact from your notes, naming the file(s) it came from. JARVIS searches several phrasings at once ("felt stuck", "lost motivation", "no drive"), so it finds notes that mean the same thing in other words |
 | research_web | Web research, related back to your own numbers. Paid, so it asks first |
 | read_inbox | Unread Gmail (read-only), and whether each sender is already in your files |
 | brief_me | Calendar, unread, overdue tasks, proposals awaiting reply, and the NY open in UK time |
 | plan_day | At most five items, money first |
 | find_niches | Your scored niches, with warm prospects per niche |
-| draft_message | An email or message on screen with a Copy button. It cannot send |
+| draft_message | An email or message on screen with Copy and **Save to Gmail drafts** (tap only; a spoken "yes" never saves it). JARVIS cannot send |
 | draft_script | A TikTok voiceover script in your voice, with subtitle-length lines |
 | write_note | Saves a new note into `JARVIS/` in your vault, when you ask |
 | remember | One fact per dated file in `memory/`, said out loud, loaded into every conversation |
@@ -110,7 +144,7 @@ With no model (no key, no credit, or no connection), JARVIS still routes by keyw
 
 | Rule | Enforced by |
 |---|---|
-| Never send | No send code exists. Gmail scope is read-only. Calendar events have no attendees and `sendUpdates=none` |
+| Never send | No send code exists. Gmail permissions are read + drafts (drafts only after you tap; no `gmail.send`, no draft-sending code). Calendar events have no attendees and `sendUpdates=none` |
 | Never change your files | The only vault write is `data.write_note`: new files in `JARVIS/` only, exclusive-create, path-checked |
 | Never write memory silently | `memory.py` writes only to `memory/`. `brain.py` appends the fact to the spoken reply if the model didn't say it |
 | Never spend without asking | Web search becomes a pending action you confirm. The model has no tool that can confirm; only your click or your own "confirm" can |
@@ -132,6 +166,7 @@ With no model (no key, no credit, or no connection), JARVIS still routes by keyw
 | "Hey Jarvis" | Free | Runs on your PC (`ui/vendor`). Nothing is sent while it's on standby |
 | Market brief | Free | Forex Factory's calendar feed (fetched at most hourly, cached in `data/cache/`) and Yahoo Finance prices (unofficial, delayed, may break) |
 | Google APIs | Free | |
+| Telegram | Free | Replies use Claude as usual; voice notes use ElevenLabs transcription |
 
 Prices as of September 2026. Check the providers' pricing pages before relying on them. JARVIS keeps its own running estimate in `data/usage.json` (click the **$ today** chip). It only counts from when tracking was added, and it's an estimate: the providers' dashboards are the bill.
 

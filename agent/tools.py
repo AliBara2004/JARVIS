@@ -57,8 +57,23 @@ def flag_injection(text):
 
 
 # ------------------------------------------------------------------ search_brain
-def search_brain(query):
-    hits = V().search(query, k=5)
+def _merged_search(queries, k=5):
+    """Search each phrasing and keep each note's best score, scaled to that phrasing's top hit so no
+    one phrasing drowns the others. This is how 'felt stuck' also finds 'lost motivation'."""
+    best = {}
+    for q in queries:
+        hits = V().search(q, k=k * 2)
+        if not hits:
+            continue
+        top = hits[0][0]
+        for sc, n in hits:
+            best[n.id] = max(best.get(n.id, (0, n))[0], sc / top), n
+    return sorted(best.values(), key=lambda x: -x[0])[:k]
+
+
+def search_brain(query, also=None):
+    phrasings = [query] + [a for a in (also or []) if isinstance(a, str) and a.strip()][:4]
+    hits = _merged_search(phrasings) if len(phrasings) > 1 else V().search(query, k=5)
     if not hits:
         return result("Nothing in your notes on that.", [card("notes", f"Search · {query}", foot="No matching notes.")],
                       {"query": query, "results": []})
@@ -354,12 +369,16 @@ def find_niches():
 
 # ------------------------------------------------------------------ draft_message
 def draft_message(to, body, subject="", channel="email"):
+    actions = [{"id": "copy", "label": "Copy", "style": "primary"}]
+    if channel == "email":
+        pid = _pend("gmail_draft", {"to": to, "subject": subject, "body": body}, f"Gmail draft to {to}"[:60])
+        actions.append({"id": pid, "label": "Save to Gmail drafts", "style": "primary"})
     return result("Drafted. It's on screen; nothing has been sent.",
                   [card("draft", f"Draft {channel} · to {to}",
                         [{"text": subject}] if subject else [], body=body,
-                        foot="JARVIS cannot send. Copy it and send it yourself.",
-                        actions=[{"id": "copy", "label": "Copy", "style": "primary"}])],
-                  {"status": "draft shown on screen, not sent"})
+                        foot="JARVIS cannot send. Copy it, or save it to your Gmail drafts and send it yourself.",
+                        actions=actions)],
+                  {"status": "draft shown on screen, not sent; Ali can tap to save it to Gmail drafts"})
 
 
 # ------------------------------------------------------------------ draft_script
@@ -753,6 +772,23 @@ def weekly_review():
     return result("This week: " + ", ".join(bits) + ".", cards, facts)
 
 
+# ------------------------------------------------------------------ backup
+def backup_notes():
+    import backup
+    if not backup.enabled():
+        return result("Backup isn't set up yet.", [card("error", "Backup not set up",
+                      foot="Add JARVIS_BACKUP_REMOTE (your private GitHub repo) to .env.")], {"error": "not set up"})
+    try:
+        summary = backup.run("asked")
+    except Exception as e:
+        return result(f"The backup failed: {e}", [card("error", "Backup failed", foot=str(e))], {"error": str(e)})
+    st = backup.status()
+    return result(f"{summary}. Your notes are safe on GitHub.",
+                  [card("backup", f"Backed up · {st['remote']}", [{"text": summary, "meta": st["last"]}],
+                        foot="Every backup is kept, so any earlier version of a note can be recovered.")],
+                  {"summary": summary, "at": st["last"]})
+
+
 # ------------------------------------------------------------------ remember
 def remember(fact, topic="general"):
     try:
@@ -800,6 +836,9 @@ def schedule_event(title, start, duration_min=30, notes=""):
 
 
 # ------------------------------------------------------------------ pending actions
+TAP_ONLY = {"gmail_draft"}   # optional offers: only a tap resolves them, never a spoken "yes"
+
+
 def _pend(kind, args, label):
     now = time.time()
     for k in [k for k, p in PENDING.items() if now - p["t"] > PENDING_TTL]:
@@ -811,7 +850,8 @@ def _pend(kind, args, label):
 
 def pending_list():
     now = time.time()
-    return [{"id": k, "label": p["label"], "kind": p["kind"]} for k, p in PENDING.items() if now - p["t"] <= PENDING_TTL]
+    return [{"id": k, "label": p["label"], "kind": p["kind"], "tap_only": p["kind"] in TAP_ONLY}
+            for k, p in PENDING.items() if now - p["t"] <= PENDING_TTL]
 
 
 def resolve(pid, ok):
@@ -832,6 +872,18 @@ def resolve(pid, ok):
                           [card("calendar", "Demo · not actually created", [{"text": p["label"]}])], r)
         return result(f"Done. {a['title']} is in your calendar.",
                       [card("calendar", "Added to your calendar", [{"text": p["label"], "url": r.get("link")}])], r)
+    if p["kind"] == "gmail_draft":
+        a = p["args"]
+        try:
+            r = data.create_gmail_draft(a["to"], a["subject"], a["body"])
+        except Exception as e:
+            return result(f"Couldn't save the draft: {e}", [card("error", "Draft not saved", foot=str(e))],
+                          {"error": str(e)})
+        if r["demo"]:
+            return result("Demo mode, so it wasn't really saved to Gmail.", [], r)
+        return result("Saved to your Gmail drafts. Nothing's been sent; it's there for you to check and send.",
+                      [card("draft", "In your Gmail drafts", [{"text": a["subject"] or "(no subject)",
+                                                               "sub": f"to {a['to']}", "url": r["link"]}])], r)
     if p["kind"] == "prospects":
         try:
             return _do_find_prospects(**p["args"])
@@ -852,8 +904,13 @@ SPECS = [
      "description": "Search Ali's own notes (his Obsidian vault) for a specific fact: clients, prospects, prices, "
                     "trading rules, journal entries, ideas. Use only when the answer depends on his files. Results "
                     "include file paths; name the file(s) you used when you answer.",
-     "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "Keywords"}},
-                      "required": ["query"]}},
+     "input_schema": {"type": "object", "properties": {
+         "query": {"type": "string", "description": "Keywords"},
+         "also": {"type": "array", "items": {"type": "string"},
+                  "description": "Up to 4 other phrasings with the same meaning. The search matches words, not "
+                                 "meanings, so for feelings or ideas add the words he might have used instead "
+                                 "(e.g. 'felt stuck' → 'lost motivation', 'no drive', 'burnt out')."}},
+         "required": ["query"]}},
     {"name": "research_web",
      "description": "Look something up on the web (prices, competitors, market data, niche research). Paid, so it "
                     "may come back as awaiting Ali's confirmation; if so, tell him and stop. When findings come "
@@ -933,6 +990,10 @@ SPECS = [
          "location": {"type": "string"}, "why": {"type": "string", "description": "Why they'd benefit"},
          "source": {"type": "string", "description": "Where they were found"}},
          "required": ["company"]}},
+    {"name": "backup_notes",
+     "description": "Back up Ali's Obsidian vault to his private GitHub repo now (it also happens automatically "
+                    "when notes change). Use when he asks to back up or save his notes somewhere safe.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "weekly_review",
      "description": "Ali's week: videos filmed and posted, new leads and pipeline moves, notes written, spend; "
                     "what slipped (overdue tasks, scripts not filmed, prospects gone quiet); and the week ahead "
@@ -974,11 +1035,11 @@ FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox
          "draft_message": draft_message, "draft_script": draft_script, "write_note": write_note,
          "remember": remember, "market_brief": market_brief, "schedule_event": schedule_event,
          "content_board": content_board, "set_status": set_status, "find_prospects": find_prospects,
-         "add_prospect": add_prospect, "weekly_review": weekly_review}
+         "add_prospect": add_prospect, "weekly_review": weekly_review, "backup_notes": backup_notes}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches", "find_prospects",
-                     "weekly_review"}
+                     "weekly_review", "attachment"}
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
 WRITES = {"remember", "write_note", "set_status", "add_prospect"}
 

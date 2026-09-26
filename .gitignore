@@ -16,3 +16,7 @@ data/usage.json
 data/usage.tmp
 data/status_log.json
 data/status_log.tmp
+data/telegram.json
+data/telegram.tmp
+data/checkin.json
+data/checkin.tmp

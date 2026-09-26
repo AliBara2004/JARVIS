@@ -242,3 +242,24 @@ def write_note(folder, title, body, meta):
     with open(p, "x", encoding="utf-8", newline="\n") as f:
         f.write(fm + f"# {title.strip()}\n\n" + body.strip() + "\n")
     return p.relative_to(root).as_posix()
+
+
+def create_gmail_draft(to, subject, body):
+    """Put a draft in Ali's Gmail Drafts folder, only after he taps "Save to Gmail drafts".
+    There is deliberately no send function anywhere in JARVIS: he reviews and sends it himself."""
+    if DEMO:
+        return {"demo": True}
+    import base64
+    from email.message import EmailMessage
+    import google
+    if not google.has_scope("https://www.googleapis.com/auth/gmail.compose"):
+        raise RuntimeError("Your Google sign-in predates drafts. Click the Google light to disconnect, then "
+                           "connect again and allow drafts.")
+    msg = EmailMessage()
+    if to and "@" in to:
+        msg["To"] = to
+    msg["Subject"] = subject or ""
+    msg.set_content(body)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    res = google.request("POST", f"{GMAIL}/drafts", body={"message": {"raw": raw}})
+    return {"demo": False, "id": res.get("id"), "link": "https://mail.google.com/mail/#drafts"}

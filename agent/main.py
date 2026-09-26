@@ -6,6 +6,7 @@ Binds to localhost only. API keys stay in this process; the browser only ever
 sees whether a key is present. POSTs need a custom header and a local
 Origin/Host, so other websites open in the same browser can't drive JARVIS.
 """
+import hashlib
 import html
 import json
 import os
@@ -14,11 +15,16 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.parse
 from urllib.parse import parse_qs, urlparse
 
+import attach
+import backup
 import brain
+import checkin
 import data
 import google
+import telegram
 import llm
 import memory
 import tools
@@ -37,20 +43,45 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=u
          ".wasm": "application/wasm", ".onnx": "application/octet-stream"}
 REINDEX_EVERY = 30               # seconds between checks for notes added or edited in Obsidian
 MAX_BODY = 64 * 1024
+SERVER = {}                      # the running server, so /api/shutdown can stop it
+PAGE_SEEN = {"at": 0.0}          # last time an open JARVIS page checked in
+BROWSER_WAIT = 5                 # seconds to let an already-open tab reconnect before opening a new one
 MAX_AUDIO = 12 * 1024 * 1024       # ~2 minutes of opus is well under this
+
+
+def code_version():
+    """Fingerprint of the server-side code. The launcher restarts a running JARVIS when this changes.
+    (The page itself is served fresh on every load, so UI changes only need a refresh.)"""
+    h = hashlib.sha1()
+    # .env too, so changed settings (a new key, a moved vault) also restart JARVIS. Only this one-way
+    # fingerprint leaves the process, never the values.
+    for p in sorted((data.ROOT / "agent").glob("*.py")) + [data.ROOT / "agent" / "prompt.md", data.ROOT / "CLAUDE.md",
+                                                           data.ROOT / ".env"]:
+        if p.exists():
+            h.update(p.name.encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()[:12]
+
+
+CODE_VERSION = code_version()
 
 
 def status():
     return {
         "mode": data.mode(),
+        "code_version": CODE_VERSION,
         "notes": len(vault.get().notes),
         "links": len(vault.get().edges),
         "graph_version": vault.version(),
         "model": llm.status(),
         "voice": voice.status(),
-        "google": {"configured": google.configured(), "connected": google.connected(), "demo": data.DEMO},
+        "google": {"configured": google.configured(), "connected": google.connected(), "demo": data.DEMO,
+                   "drafts": google.has_scope("https://www.googleapis.com/auth/gmail.compose")},
         "web_search": tools.WEB_SEARCH,
         "usage": usage.summary(),
+        "telegram": telegram.status(),
+        "checkin": checkin.status(),
+        "backup": backup.status(),
         "pending": tools.pending_list(),
     }
 
@@ -84,7 +115,7 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self):
         return self.headers.get("Host", "") in ALLOWED_HOSTS
 
-    def _stream_ask(self, text):
+    def _stream_ask(self, text, attachments=None):
         """Newline-delimited JSON events while JARVIS answers, then {"type": "done", ...result}.
         HTTP/1.0: the response ends when the connection closes, so no chunked encoding needed."""
         self.send_response(200)
@@ -106,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 gone["yes"] = True
 
-        emit({"type": "done", **brain.ask(text, emit)})
+        emit({"type": "done", **brain.ask(text, emit, attachments=attachments)})
 
     # ------------------------------------------------------------ GET
     def do_GET(self):
@@ -116,7 +147,11 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
 
         if u.path == "/api/status":
-            return self._json(status())
+            st = status()
+            st["page_seen_ago"] = round(time.time() - PAGE_SEEN["at"]) if PAGE_SEEN["at"] else None
+            if self.headers.get("X-Jarvis-Launcher") != "1":        # the launcher asking doesn't count as a tab
+                PAGE_SEEN["at"] = time.time()
+            return self._json(st)
         if u.path == "/api/graph":
             return self._json(vault.get().graph_json())
         if u.path == "/api/note":
@@ -161,6 +196,15 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         path = urlparse(self.path).path
 
+        if path == "/api/attach":
+            if n > attach.MAX_PDF:
+                return self._json({"error": "That file is over 20 MB."}, 413)
+            name = urllib.parse.unquote(self.headers.get("X-Filename", "file"))[:80]
+            try:
+                return self._json(attach.add(self.rfile.read(n), name, self.headers.get("Content-Type", "")))
+            except attach.AttachError as e:
+                return self._json({"error": str(e)}, 415)
+
         if path == "/api/listen":
             if n > MAX_AUDIO:
                 return self._json({"error": "recording too long"}, 413)
@@ -188,11 +232,25 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/ask":
             return self._json(brain.ask(str(body.get("text", ""))[:4000]))
         if path == "/api/ask/stream":
-            return self._stream_ask(str(body.get("text", ""))[:4000])
+            ids = [str(a) for a in body.get("attachments") or []][:5]
+            return self._stream_ask(str(body.get("text", ""))[:4000], ids)
         if path == "/api/confirm":
             return self._json(brain.confirm(str(body.get("id", "")), bool(body.get("ok"))))
         if path == "/api/reset":
             brain.reset()
+            return self._json({"ok": True})
+        if path == "/api/shutdown":
+            # Only the launcher uses this, to swap an old JARVIS for a new one. Same local-only checks as every POST.
+            self._json({"ok": True})
+            threading.Thread(target=SERVER["srv"].shutdown, daemon=True).start()
+            return
+        if path == "/api/checkin":
+            if body.get("action") == "skip":
+                checkin.skip()
+                return self._json({"ok": True})
+            return self._json({"question": brain.ask_checkin()})
+        if path == "/api/telegram/unpair":
+            telegram.unpair()
             return self._json({"ok": True})
         if path == "/api/google/disconnect":
             google.disconnect()
@@ -210,6 +268,7 @@ def watch_vault():
             if new != sig:
                 sig = new
                 v = vault.reload()
+                backup.mark_dirty()
                 print(f"[vault] change detected, re-indexed: {len(v.notes)} notes, {len(v.edges)} links")
         except Exception as e:
             print(f"[vault] re-index failed: {e}")
@@ -222,11 +281,18 @@ def main():
         pass
     threading.Thread(target=llm.check, daemon=True).start()
     threading.Thread(target=watch_vault, daemon=True).start()
+    telegram.start()
+    backup.start()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    SERVER["srv"] = srv
     print(f"JARVIS · {data.mode()} mode · {len(vault.get().notes)} notes · {len(vault.get().edges)} links · model {llm.MODEL}")
     print(f"open {ORIGIN}   (Ctrl+C to stop)")
     if "--no-browser" not in sys.argv:
-        threading.Timer(0.6, lambda: webbrowser.open(ORIGIN)).start()
+        # An already-open JARVIS tab reconnects (and reloads) by itself; only open one if none did.
+        def open_if_needed():
+            if not PAGE_SEEN["at"]:
+                webbrowser.open(ORIGIN)
+        threading.Timer(BROWSER_WAIT, open_if_needed).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

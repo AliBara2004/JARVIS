@@ -303,3 +303,14 @@ button.link:hover { color: var(--text); }
 
 #spend-chip { cursor: pointer; }
 #spend-chip:hover { color: var(--text); }
+#telegram-chip { cursor: pointer; }
+
+/* ---------- attachments ---------- */
+.tray { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 2px 6px; }
+.tray[hidden] { display: none; }
+.att { font-size: 12px; padding: 4px 8px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line-2); display: inline-flex; gap: 6px; align-items: center; }
+.att b { font: 9px var(--mono); letter-spacing: .1em; color: var(--pink); }
+.clip { padding: 6px 8px; font-size: 14px; }
+.dropzone { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: rgba(7,6,12,.72); border: 2px dashed rgba(236,72,153,.6); }
+.dropzone[hidden] { display: none; }
+.dropzone div { font: 14px var(--mono); letter-spacing: .1em; color: #f9a8d4; }
