@@ -263,3 +263,37 @@ def create_gmail_draft(to, subject, body):
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     res = google.request("POST", f"{GMAIL}/drafts", body={"message": {"raw": raw}})
     return {"demo": False, "id": res.get("id"), "link": "https://mail.google.com/mail/#drafts"}
+
+
+# ---------------------------------------------------------------- editing an existing note
+# Only after Ali asked in his own words AND confirmed a preview of the exact change (tools.edit_note).
+# The note must still be exactly what the preview was built from, or nothing is written.
+EDITABLE = {".md", ".markdown", ".txt"}
+
+
+def note_file(rel):
+    """Absolute path of a note inside the vault, refusing anything outside it or in hidden folders."""
+    root = vault_root()
+    if root is None:
+        raise RuntimeError("No vault folder set.")
+    p = (root / rel).resolve()
+    if root.resolve() not in p.parents or p.suffix.lower() not in EDITABLE:
+        raise RuntimeError("That isn't a note inside your vault.")
+    if any(part.startswith(".") for part in p.relative_to(root.resolve()).parts):
+        raise RuntimeError("JARVIS doesn't edit hidden folders like .obsidian.")
+    return p
+
+
+def read_note(rel):
+    return note_file(rel).read_bytes().decode("utf-8")
+
+
+def replace_note(rel, new_text, expect_sha):
+    import hashlib
+    p = note_file(rel)
+    current = p.read_bytes()
+    if hashlib.sha256(current).hexdigest() != expect_sha:
+        raise RuntimeError("The note changed since I showed you the edit. Ask again and I'll redo it.")
+    tmp = p.with_name(p.name + ".jarvis-tmp")
+    tmp.write_bytes(new_text.encode("utf-8"))
+    os.replace(tmp, p)                        # all or nothing: never a half-written note

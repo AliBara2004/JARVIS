@@ -87,7 +87,7 @@ Your vault is backed up to a **private** GitHub repo (`JARVIS-vault`), set with 
 - Prospects: put `status: contacted`, `status: call booked` or `status: proposal sent` in the frontmatter. That feeds **Brief** ("what slipped") and **Plan** (ranked by what moves money).
 - Tasks: `- [ ] Chase Cobalt Dental 📅 2026-10-01` (the Obsidian Tasks format). Overdue ones show in the brief.
 - Niches: write a score like `→ 12/15` in the note. **Find niches** ranks by it.
-- JARVIS writes **only** into a `JARVIS/` folder in your vault (`Scripts`, `Ideas`, `Video ideas`, `Journal`, `Notes`, `Prospects`), and only new files.
+- New notes from JARVIS go into a `JARVIS/` folder in your vault (`Scripts`, `Ideas`, `Video ideas`, `Journal`, `Notes`, `Prospects`). It edits your other notes only when you ask, after you confirm the change.
 
 It reads Markdown, text and PDF. It skips `Templates/`, `.obsidian`, `.git`, `node_modules` and anything over 2 MB. Scanned PDFs have no text layer and are skipped.
 
@@ -135,6 +135,7 @@ The wake word's `THRESHOLD` is at the top of `ui/wake.js`. Lower it if it misses
 | set_status | "I filmed the ego one" / "Cobalt Dental replied": moves a video or prospect on. Recorded in JARVIS's own log (`data/status_log.json`); your note is untouched. A `status:` you set yourself in Obsidian wins if you saved it more recently |
 | find_prospects | Real businesses in a niche with a concrete reason to need automation (paid web search, asks first). Businesses only, never individuals' contact details |
 | add_prospect | Saves the ones you pick as leads in `JARVIS/Prospects` |
+| edit_note / undo_last_edit | "Change my risk per trade to $300 in Risk Rules": shows the exact change, applies it when you confirm. "Undo that edit" puts it back |
 | weekly_review | Your week: videos filmed and posted, new leads and moves, notes written, spend; what slipped; and the week ahead (diary + red folders). **Week** button |
 | schedule_event | Proposes a calendar event. It's added only when you confirm; nobody is invited |
 
@@ -145,7 +146,7 @@ With no model (no key, no credit, or no connection), JARVIS still routes by keyw
 | Rule | Enforced by |
 |---|---|
 | Never send | No send code exists. Gmail permissions are read + drafts (drafts only after you tap; no `gmail.send`, no draft-sending code). Calendar events have no attendees and `sendUpdates=none` |
-| Never change your files | The only vault write is `data.write_note`: new files in `JARVIS/` only, exclusive-create, path-checked |
+| Change your notes only when you ask | New notes go to `JARVIS/` (exclusive-create). Editing an existing note (`edit_note`) needs your request in your own words, shows the exact change, and waits for your confirm; it refuses if the note changed since the preview, writes atomically, and "undo that edit" restores it. Never from emails, files, web pages or forwarded messages. No deleting notes |
 | Never write memory silently | `memory.py` writes only to `memory/`. `brain.py` appends the fact to the spoken reply if the model didn't say it |
 | Never spend without asking | Web search becomes a pending action you confirm. The model has no tool that can confirm; only your click or your own "confirm" can |
 | Never invent / always qualify | The prompt, plus qualifiers written into the data ("simulated, not withdrawable", "estimated from plan tier") |

@@ -772,6 +772,91 @@ def weekly_review():
     return result("This week: " + ", ".join(bits) + ".", cards, facts)
 
 
+# ------------------------------------------------------------------ editing existing notes
+LAST_EDIT = {}               # for "undo that": {rel, before, after, title}
+PREVIEW_LINES = 40
+
+
+def _find_note_for_edit(title):
+    t = title.lower().strip()
+    pool = [n for n in V().notes if not n.rel.startswith(".")]
+    exact = [n for n in pool if n.title.lower() == t]
+    if exact:
+        return exact[0], []
+    ranked = sorted(((0.9 if t in n.title.lower() else difflib.SequenceMatcher(None, t, n.title.lower()).ratio(), n)
+                     for n in pool), key=lambda p: -p[0])
+    if not ranked or ranked[0][0] < 0.55:
+        return None, []
+    close = [n for sc, n in ranked[1:4] if ranked[0][0] - sc < 0.05]
+    return (None, [ranked[0][1]] + close) if close else (ranked[0][1], [])
+
+
+def edit_note(title, find="", replace="", append=""):
+    import hashlib
+    n, alts = _find_note_for_edit(title)
+    if not n:
+        return result("Which note do you mean?" if alts else f"I can't find a note called '{title}'.", [],
+                      {"error": "ambiguous" if alts else "not found", "candidates": [a.title for a in alts]})
+    try:
+        before = data.read_note(n.rel)
+    except Exception as e:
+        return result(f"I can't edit that: {e}", [], {"error": str(e)})
+    if find:
+        count = before.count(find)
+        if count != 1:
+            return result("I need the exact text to change, and it has to appear once.", [],
+                          {"error": f"'find' text appears {count} times in {n.rel}; quote it exactly and uniquely",
+                           "note_text": before[:3000]})
+        after = before.replace(find, replace, 1)
+    elif append:
+        after = before.rstrip("\n") + "\n\n" + append.strip("\n") + "\n"
+    else:
+        return result("What should I change?", [], {"error": "give find+replace, or append"})
+    if after == before:
+        return result("That wouldn't change anything.", [], {"error": "no change"})
+    diff = list(difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=1))[2:]
+    preview = "\n".join(diff[:PREVIEW_LINES]) + ("\n…" if len(diff) > PREVIEW_LINES else "")
+    pid = _pend("edit", {"rel": n.rel, "title": n.title, "after": after, "before": before,
+                         "sha": hashlib.sha256(before.encode("utf-8")).hexdigest()}, f"Edit {n.title}"[:60])
+    return result(f"Here's the change to {n.title}. Say confirm, or tap Apply.",
+                  [card("confirm", f"Edit · {n.rel}", body=preview,
+                        foot="- removed  + added. Nothing is changed until you confirm. You can undo it after.",
+                        actions=[{"id": pid, "label": "Apply", "style": "primary"},
+                                 {"id": pid, "label": "Cancel", "style": "cancel"}])],
+                  {"status": "awaiting Ali's confirmation", "pending_id": pid, "note": n.rel}, pending=pid)
+
+
+def _apply_edit(a):
+    try:
+        data.replace_note(a["rel"], a["after"], a["sha"])
+    except Exception as e:
+        return result(f"Not changed: {e}", [card("error", "Edit not applied", foot=str(e))], {"error": str(e)})
+    LAST_EDIT.clear()
+    LAST_EDIT.update(rel=a["rel"], title=a["title"], before=a["before"], after=a["after"])
+    v = vault.reload()
+    node = next((x for x in v.notes if x.rel == a["rel"]), None)
+    return result(f"Updated {a['title']}. Say 'undo that edit' to put it back.",
+                  [card("saved", f"Edited · {a['rel']}", rows=[{"text": a["title"], "sub": a["rel"],
+                                                                "note": node.id if node else None, "tag": "edited"}],
+                        foot="Your GitHub backup also keeps the previous version.")],
+                  {"edited": a["title"], "graph_changed": True}, [node.id] if node else [])
+
+
+def undo_last_edit():
+    import hashlib
+    if not LAST_EDIT:
+        return result("There's no edit of mine to undo since JARVIS started.", [], {"error": "nothing to undo"})
+    a = LAST_EDIT
+    try:
+        data.replace_note(a["rel"], a["before"], hashlib.sha256(a["after"].encode("utf-8")).hexdigest())
+    except Exception as e:
+        return result(f"I couldn't undo it: {e}", [], {"error": str(e)})
+    title = a["title"]
+    LAST_EDIT.clear()
+    vault.reload()
+    return result(f"Put {title} back how it was.", [], {"edited": f"{title} (undone)", "graph_changed": True})
+
+
 # ------------------------------------------------------------------ backup
 def backup_notes():
     import backup
@@ -872,6 +957,8 @@ def resolve(pid, ok):
                           [card("calendar", "Demo · not actually created", [{"text": p["label"]}])], r)
         return result(f"Done. {a['title']} is in your calendar.",
                       [card("calendar", "Added to your calendar", [{"text": p["label"], "url": r.get("link")}])], r)
+    if p["kind"] == "edit":
+        return _apply_edit(p["args"])
     if p["kind"] == "gmail_draft":
         a = p["args"]
         try:
@@ -990,6 +1077,19 @@ SPECS = [
          "location": {"type": "string"}, "why": {"type": "string", "description": "Why they'd benefit"},
          "source": {"type": "string", "description": "Where they were found"}},
          "required": ["company"]}},
+    {"name": "edit_note",
+     "description": "Change one of Ali's existing notes, only when he asks. Either replace an exact piece of text "
+                    "('find' must appear exactly once; copy it from the note, via search_brain if needed) or add "
+                    "text to the end ('append'). He sees the exact change and confirms before anything is written.",
+     "input_schema": {"type": "object", "properties": {
+         "title": {"type": "string", "description": "The note's name"},
+         "find": {"type": "string", "description": "Exact existing text to replace (appears once)"},
+         "replace": {"type": "string", "description": "What it becomes (empty to delete that text)"},
+         "append": {"type": "string", "description": "Text to add at the end instead of replacing"}},
+         "required": ["title"]}},
+    {"name": "undo_last_edit",
+     "description": "Undo the last edit JARVIS made to one of Ali's notes, when he asks.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "backup_notes",
      "description": "Back up Ali's Obsidian vault to his private GitHub repo now (it also happens automatically "
                     "when notes change). Use when he asks to back up or save his notes somewhere safe.",
@@ -1035,13 +1135,14 @@ FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox
          "draft_message": draft_message, "draft_script": draft_script, "write_note": write_note,
          "remember": remember, "market_brief": market_brief, "schedule_event": schedule_event,
          "content_board": content_board, "set_status": set_status, "find_prospects": find_prospects,
-         "add_prospect": add_prospect, "weekly_review": weekly_review, "backup_notes": backup_notes}
+         "add_prospect": add_prospect, "weekly_review": weekly_review, "backup_notes": backup_notes,
+         "edit_note": edit_note, "undo_last_edit": undo_last_edit}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches", "find_prospects",
                      "weekly_review", "attachment"}
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
-WRITES = {"remember", "write_note", "set_status", "add_prospect"}
+WRITES = {"remember", "write_note", "set_status", "add_prospect", "edit_note", "undo_last_edit"}
 
 
 def run(name, args):

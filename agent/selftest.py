@@ -219,6 +219,18 @@ check("After the turn, the file is swapped out of history (not re-sent every tur
 check("Text inside attachments can't trigger writes on its own", "attachment" in tools.UNTRUSTED_SOURCES)
 check("Check-in asks a question from its list", checkin.question() in checkin.QUESTIONS)
 
+print("\nEditing existing notes")
+for _bad in ("../../../jarvis/.env", ".obsidian/app.json", "notes.md.exe"):
+    try:
+        data.note_file(_bad)
+        check(f"Can't edit {_bad}", False)
+    except RuntimeError:
+        check(f"Can't edit {_bad}", True)
+check("An edit is only a preview until Ali confirms (pending action)", 'p["kind"] == "edit"' in src(ROOT / "agent" / "tools.py")
+      and "edit_note" in tools.WRITES)
+check("A stale preview is refused (content hash checked before writing)", "expect_sha" in src(ROOT / "agent" / "data.py"))
+check("Edits are all-or-nothing (temp file + atomic replace)", "os.replace(tmp, p)" in src(ROOT / "agent" / "data.py"))
+
 print("\nCalendar needs Ali's confirm")
 before = len(tools.pending_list())
 r = tools.run("schedule_event", {"title": "Selftest", "start": "2099-01-01T10:00"})

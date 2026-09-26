@@ -28,7 +28,7 @@ CANCEL = re.compile(r"^\s*(no|nope|cancel|don'?t|stop|scrap that)\b[\s.!]*$", re
 
 # Ali asking, in his own words, for something to be kept. Needed for a write after untrusted text was read.
 ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this)"
-                           r"|add|mark|move|set|filmed|posted|replied)\b", re.I)
+                           r"|add|mark|move|set|filmed|posted|replied|edit|change|update|fix|replace|remove|tidy|rewrite|undo)\b", re.I)
 
 
 def system_blocks():
@@ -246,6 +246,8 @@ def _model_turn(text, emit, readonly=False, attachments=None):
             if isinstance(r["data"], dict):
                 if r["data"].get("remembered"):
                     written.append(("fact", r["data"]["remembered"]))
+                if r["data"].get("edited"):
+                    written.append(("stage", r["data"]["edited"]))
                 if r["data"].get("marked"):
                     written.append(("stage", r["data"]["marked"]))
                 if r["data"].get("saved"):
