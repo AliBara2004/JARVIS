@@ -26,7 +26,7 @@ CANCEL = re.compile(r"^\s*(no|nope|cancel|don'?t|stop|scrap that)\b[\s.!]*$", re
 
 
 # Ali asking, in his own words, for something to be kept. Needed for a write after untrusted text was read.
-ASKED_TO_KEEP = re.compile(r"\b(remember|note|save|write|jot|keep|store|log|don'?t forget|make a note|put (it|that|this))\b",
+ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this))\b",
                            re.I)
 
 

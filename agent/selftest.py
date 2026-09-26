@@ -106,6 +106,8 @@ check("Writes refused after reading files/email when Ali didn't ask",
       brain._write_blocked("remember", "who emailed me?", ["read_inbox"]))
 check("…but allowed when Ali asked", not brain._write_blocked("remember", "remember that I charge £1500", ["search_brain"]))
 check("…and allowed with nothing untrusted read", not brain._write_blocked("remember", "I've decided on £600 a workflow", []))
+check("'give me some notes on…' counts as asking",
+      not brain._write_blocked("write_note", "research the UN conference and give me some notes", ["research_web"]))
 if data.DEMO:
     r = tools.run("search_brain", {"query": "forum zapier pricing"})
     check("Planted instruction in a note is flagged", bool(r["cards"][0].get("warn")))
