@@ -1,0 +1,38 @@
+[
+ {
+  "day": 0,
+  "time": "09:00",
+  "dur": 90,
+  "title": "Deep work: productised Zapier audit"
+ },
+ {
+  "day": 0,
+  "time": "11:00",
+  "dur": 30,
+  "title": "Discovery call: Cobalt Dental"
+ },
+ {
+  "day": 0,
+  "time": "17:30",
+  "dur": 45,
+  "title": "Journal review + eval check"
+ },
+ {
+  "day": 1,
+  "time": "10:30",
+  "dur": 30,
+  "title": "Recruiter call: Azure role"
+ },
+ {
+  "day": 2,
+  "time": "12:00",
+  "dur": 60,
+  "title": "Gym"
+ },
+ {
+  "day": 3,
+  "time": "10:00",
+  "dur": 45,
+  "title": "Proposal walkthrough: Harbour Care"
+ }
+]

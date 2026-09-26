@@ -1,0 +1,13 @@
+# secrets
+.env
+.secrets/
+
+# personal: facts JARVIS remembers about you (the folder is kept, the facts are not)
+memory/*.md
+
+# notes JARVIS saves into the demo vault (wiped by generate_demo.py anyway)
+data/demo_vault/JARVIS/
+
+# python
+__pycache__/
+*.pyc
