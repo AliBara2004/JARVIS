@@ -55,8 +55,10 @@ check("No API key names in browser code", not leaks, str(leaks))
 
 WRITE = re.compile(r"open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
-check("Only data.py (JARVIS/ notes), memory.py (memory/) and google.py (its token) write files",
-      writers == ["data.py", "google.py", "memory.py"], f"writers: {writers}")
+check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token) and market.py (its cache) write files",
+      writers == ["data.py", "google.py", "market.py", "memory.py"], f"writers: {writers}")
+check("market.py only writes inside data/cache", 'CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"'
+      in src(ROOT / "agent" / "market.py") and src(ROOT / "agent" / "market.py").count("write_text") == 1)
 check("Vault and memory writes use exclusive-create (can't overwrite)",
       'open(p, "x"' in src(ROOT / "agent" / "data.py") and 'open(p, "x"' in src(ROOT / "agent" / "memory.py"))
 

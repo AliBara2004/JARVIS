@@ -11,3 +11,4 @@ data/demo_vault/JARVIS/
 # python
 __pycache__/
 *.pyc
+data/cache/

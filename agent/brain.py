@@ -253,7 +253,8 @@ SMALL_TALK = [
      lambda: "That needs actual thinking, and the model's offline. Give me a topic and I'll search your notes."),
     (r"how are you|you ok|how'?s it going", lambda: "Running on half a brain today, sir. The model's offline."),
 ]
-INTENTS = [
+INTENTS = [   # first match wins: the specific market words before the general "brief"
+    (r"pre-?session|\bmarkets?\b|red folders?|forex factory|economic calendar|\bnews\b", "market_brief", {}),
     (r"\bbrief\b|what('?s| is) (on )?today|morning update", "brief_me", {}),
     (r"\bplan\b.*\bday\b|\bplan my\b|what should i do", "plan_day", {}),
     (r"\binbox\b|\be-?mail(s|ed)?\b|\bunread\b|who('?s| has)? (wrote|written|messaged)", "read_inbox", {}),

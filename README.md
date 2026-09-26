@@ -72,7 +72,7 @@ A starter vault lives at `C:\Users\abara\Documents\JARVIS Vault`. Open **Start h
 | **Mic / Space** | Start talking without the wake word. Your turn ends after 0.9 s of silence |
 | **Space / Esc while it talks** | Interrupt. The mic is deaf while JARVIS speaks, so it never hears itself |
 | **Mute** | JARVIS keeps listening but stops speaking |
-| **Brief / Plan / Memory** | Calendar + unread + what slipped · five things ranked by money · what it remembers about you |
+| **Brief / Plan / Market / Memory** | Calendar + unread + what slipped + today's red folders · five things ranked by money · pre-session news and markets · what it remembers about you |
 | **Graph** | Drag to pan, scroll to zoom, drag a node to move it (double-click to release). Click opens a note. Shift-click a second node traces the shortest path. `F` fits |
 
 Voice tuning lives in named constants at the top of `ui/app.js`:
@@ -95,6 +95,7 @@ The wake word's `THRESHOLD` is at the top of `ui/wake.js`. Lower it if it misses
 | draft_script | A TikTok voiceover script in your voice, with subtitle-length lines |
 | write_note | Saves a new note into `JARVIS/` in your vault, when you ask |
 | remember | One fact per dated file in `memory/`, said out loud, loaded into every conversation |
+| market_brief | Pre-session: today's Forex Factory calendar (red folders + medium USD, UK time, flagged near your NY session, with your no-trade windows) and NQ, ES, VIX, dollar, 10-year, oil and gold with NQ's overnight range. **Market** button, or "pre-session brief" |
 | schedule_event | Proposes a calendar event. It's added only when you confirm; nobody is invited |
 
 With no model (no key, no credit, or no connection), JARVIS still routes by keyword and marks every reply **keyword routing · model offline**. Small talk gets talk, not a search result.
@@ -123,6 +124,7 @@ With no model (no key, no credit, or no connection), JARVIS still routes by keyw
 | Anthropic web search | Billed per search on top of tokens | Only runs after you confirm (`JARVIS_WEB_SEARCH=ask`) |
 | ElevenLabs | Free tier: 10,000 credits/month. Starter: $6/month for 30,000 | Speech uses the Flash model. Replies are short, and anything over 1,200 characters is cut off with "the rest is on screen". Transcription only happens after the chime or Mic |
 | "Hey Jarvis" | Free | Runs on your PC (`ui/vendor`). Nothing is sent while it's on standby |
+| Market brief | Free | Forex Factory's calendar feed (fetched at most hourly, cached in `data/cache/`) and Yahoo Finance prices (unofficial, delayed, may break) |
 | Google APIs | Free | |
 
 Prices as of September 2026. Check the providers' pricing pages before relying on them.

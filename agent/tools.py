@@ -18,6 +18,7 @@ import time
 import clock
 import data
 import llm
+import market
 import memory
 import vault
 
@@ -237,6 +238,15 @@ def brief_me():
 
     if today.weekday() < 5:
         facts["ny_open_uk"] = clock.ny_open_uk(today).strftime("%H:%M")
+        try:
+            reds = [e for e in _key_events(market.calendar(today)) if e["impact"] == "High"]
+            facts["red_folders_today"] = [f"{e['time']} {e['currency']} {e['title']}" for e in reds]
+            if reds:
+                cards.append(card("calendar", f"Red folders · {len(reds)} today",
+                                  [{"text": f"{e['currency']} · {e['title']}", "meta": e["time"]} for e in reds],
+                                  foot="Forex Factory, UK time. Ask for the pre-session brief for the full picture."))
+        except market.MarketError as e:
+            facts["red_folders_error"] = str(e)
 
     bits = []
     if events is not None:
@@ -244,7 +254,8 @@ def brief_me():
     if msgs is not None:
         bits.append(f"{len(msgs)} unread")
     bits.append(f"{len(overdue)} overdue" if overdue else "nothing overdue")
-    say = f"{clock.part_of_day().capitalize()}. " + ", ".join(bits) + "."
+    summary = ", ".join(bits)
+    say = f"{clock.part_of_day().capitalize()}. {summary[:1].upper()}{summary[1:]}."
     if "ny_open_uk" in facts:
         say += f" New York opens at {facts['ny_open_uk']}."
     return result(say, cards, facts, notes)
@@ -387,6 +398,115 @@ def write_note(title, body, folder="Notes", links=None):
                   [node.id] if node else [])
 
 
+# ------------------------------------------------------------------ market_brief (pre-session)
+SESSION_BEFORE_MIN = 60     # news this long before the NY open counts as "in your session"
+SESSION_AFTER_MIN = 150     # ...and this long after it
+
+
+def _key_events(events):
+    """Red folders from anywhere, plus medium-impact USD (what moves NQ)."""
+    return [e for e in events if e["impact"] == "High" or (e["impact"] == "Medium" and e["currency"] == "USD")]
+
+
+def _note(title):
+    return next((n for n in V().notes if n.title.lower() == title.lower()), None)
+
+
+def _news_buffer_min():
+    """'No trading N minutes either side of red-folder news' from Risk Rules, if he's filled it in."""
+    n = _note("Risk Rules")
+    m = re.search(r"(?i)no trading\D{0,10}(\d+)\s*min", n.text) if n else None
+    return int(m.group(1)) if m else None
+
+
+def _pct(p):
+    return "n/a" if p is None else f"{p:+.2f}%"
+
+
+def market_brief():
+    today = clock.uk_today()
+    weekday = today.weekday() < 5
+    open_uk = clock.ny_open_uk(today) if weekday else None
+    cards, facts, bits = [], {"date": today.isoformat(), "weekday": weekday}, []
+    if open_uk:
+        facts["ny_open_uk"] = open_uk.strftime("%H:%M")
+
+    # --- calendar
+    try:
+        events = _key_events(market.calendar(today))
+        buffer = _news_buffer_min()
+        rows = []
+        for e in events:
+            in_session = bool(open_uk) and (open_uk - dt.timedelta(minutes=SESSION_BEFORE_MIN) <= e["at"]
+                                            <= open_uk + dt.timedelta(minutes=SESSION_AFTER_MIN))
+            sub = " · ".join(x for x in (f"forecast {e['forecast']}" if e["forecast"] else "",
+                                          f"previous {e['previous']}" if e["previous"] else "") if x)
+            if e["impact"] == "High" and buffer:
+                a, b = e["at"] - dt.timedelta(minutes=buffer), e["at"] + dt.timedelta(minutes=buffer)
+                sub = (sub + " · " if sub else "") + f"your no-trade window {a:%H:%M}–{b:%H:%M}"
+            rows.append({"text": f"{e['currency']} · {e['title']}", "meta": e["time"], "sub": sub or None,
+                         "tag": ("red" if e["impact"] == "High" else "med") + (" · session" if in_session else "")})
+            e["in_session"] = in_session
+        facts["events"] = [{k: v for k, v in e.items() if k != "at"} for e in events]
+        facts["no_trade_buffer_min"] = buffer
+        reds = [e for e in events if e["impact"] == "High"]
+        near = [e for e in events if e["in_session"]]
+        if not weekday:
+            bits.append("Weekend: no session today")
+        elif not events:
+            bits.append("No red folders listed for today")
+        else:
+            bits.append(f"{len(reds) or 'No'} red folder{'s' if len(reds) != 1 else ''} today"
+                        + (": " + ", ".join(f"{e['title']} at {e['time']}" for e in reds[:3]) if reds else ""))
+            bits.append("Around your session: " + ", ".join(f"{e['title']} at {e['time']}" for e in near[:3])
+                        if near else "Nothing scheduled around your session")
+        empty_note = ("Nothing listed. Forex Factory publishes a week's calendar over the preceding weekend, "
+                      "so a blank weekday may just not be out yet.") if weekday and not events else None
+        cards.append(card("calendar", f"Economic calendar · {today:%a %d %b} · UK time",
+                          rows or [{"text": "No high-impact or USD medium events."}],
+                          foot=empty_note or "Source: Forex Factory. Red = high impact; med = medium-impact USD. "
+                                             f"'session' = within {SESSION_BEFORE_MIN} min before to "
+                                             f"{SESSION_AFTER_MIN} min after the NY open."))
+    except market.MarketError as e:
+        facts["calendar_error"] = str(e)
+        bits.append("Calendar unavailable")
+        cards.append(card("error", "Economic calendar unavailable", foot=str(e)))
+
+    # --- prices
+    try:
+        qs, errs = market.quotes()
+        stale = all(q["stale"] for q in qs)
+        rows = []
+        for q in qs:
+            sub = None
+            if "overnight_high" in q:
+                where = ("above the overnight range" if q["last"] > q["overnight_high"] else
+                         "below the overnight range" if q["last"] < q["overnight_low"] else "inside the overnight range")
+                sub = f"overnight {q['overnight_low']:,.2f}–{q['overnight_high']:,.2f} · {where}"
+            rows.append({"text": q["name"], "meta": f"{q['last']:,.2f}  {_pct(q['pct'])}", "sub": sub})
+        facts["prices"] = qs
+        facts["prices_stale"] = stale
+        nq = next((q for q in qs if q["symbol"] == "NQ=F"), None)
+        vix = next((q for q in qs if q["symbol"] == "^VIX"), None)
+        if nq and nq["pct"] is not None:
+            bits.append(("Markets are shut; " if stale else "") +
+                        f"NQ {nq['last']:,.0f}, {_pct(nq['pct'])} vs the last close" +
+                        (f", VIX {vix['last']:.1f}" if vix else ""))
+        as_of = max((q["as_of_utc"] for q in qs if q["as_of_utc"]), default=None)
+        foot = ("Source: Yahoo Finance (unofficial, delayed). Change is against the previous close."
+                + (f" Last prices from {as_of[:16].replace('T', ' ')} UTC: markets are closed." if stale else "")
+                + (f" Missing: {'; '.join(errs)}." if errs else ""))
+        cards.append(card("market", "Markets · pre-session" + (" · closed" if stale else ""), rows, foot=foot))
+    except market.MarketError as e:
+        facts["prices_error"] = str(e)
+        bits.append("Prices unavailable")
+        cards.append(card("error", "Prices unavailable", foot=str(e)))
+
+    facts["headlines"] = "Not included. Headlines need research_web (paid): offer it, don't run it unasked."
+    say = ". ".join(bits) + "." + (f" New York opens at {facts['ny_open_uk']}." if open_uk else "")
+    return result(say, cards, facts)
+
+
 # ------------------------------------------------------------------ remember
 def remember(fact, topic="general"):
     try:
@@ -523,6 +643,13 @@ SPECS = [
          "length_s": {"type": "integer", "description": "Target length in seconds (default 60)"},
          "notes": {"type": "string", "description": "Filming notes: location, b-roll, on-screen text"}},
          "required": ["title", "hook", "beats"]}},
+    {"name": "market_brief",
+     "description": "Pre-session trading brief: today's economic calendar from Forex Factory (red folders plus "
+                    "medium USD events, in UK time, flagged if around his New York session, with his no-trade "
+                    "windows) and a snapshot of NQ, ES, VIX, dollar, 10-year yield, oil and gold with NQ's "
+                    "overnight range. Free. Use for 'pre-session brief', 'what's the news today', 'what's the "
+                    "market doing', 'any red folders'.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "remember",
      "description": "Store one fact about Ali in JARVIS's memory, loaded into every future conversation. Use when he "
                     "asks you to remember something, or tells you something about himself that will still matter in "
@@ -556,7 +683,7 @@ SPECS = [
 FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox": read_inbox,
          "brief_me": brief_me, "plan_day": plan_day, "find_niches": find_niches,
          "draft_message": draft_message, "draft_script": draft_script, "write_note": write_note,
-         "remember": remember, "schedule_event": schedule_event}
+         "remember": remember, "market_brief": market_brief, "schedule_event": schedule_event}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches"}
