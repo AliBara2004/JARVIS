@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -33,6 +34,7 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=u
          ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
          ".ico": "image/x-icon", ".json": "application/json", ".mjs": "text/javascript; charset=utf-8",
          ".wasm": "application/wasm", ".onnx": "application/octet-stream"}
+REINDEX_EVERY = 30               # seconds between checks for notes added or edited in Obsidian
 MAX_BODY = 64 * 1024
 MAX_AUDIO = 12 * 1024 * 1024       # ~2 minutes of opus is well under this
 
@@ -42,6 +44,7 @@ def status():
         "mode": data.mode(),
         "notes": len(vault.get().notes),
         "links": len(vault.get().edges),
+        "graph_version": vault.version(),
         "model": llm.status(),
         "voice": voice.status(),
         "google": {"configured": google.configured(), "connected": google.connected(), "demo": data.DEMO},
@@ -169,12 +172,28 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
 
+def watch_vault():
+    """Rebuild the index when notes change on disk, so Obsidian edits reach JARVIS without a restart."""
+    sig = data.signature()
+    while True:
+        time.sleep(REINDEX_EVERY)
+        try:
+            new = data.signature()
+            if new != sig:
+                sig = new
+                v = vault.reload()
+                print(f"[vault] change detected, re-indexed: {len(v.notes)} notes, {len(v.edges)} links")
+        except Exception as e:
+            print(f"[vault] re-index failed: {e}")
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
     threading.Thread(target=llm.check, daemon=True).start()
+    threading.Thread(target=watch_vault, daemon=True).start()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"JARVIS · {data.mode()} mode · {len(vault.get().notes)} notes · {len(vault.get().edges)} links · model {llm.MODEL}")
     print(f"open {ORIGIN}   (Ctrl+C to stop)")

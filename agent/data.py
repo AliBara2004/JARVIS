@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEMO_DIR = ROOT / "data" / "demo_vault"
 
-SKIP_DIRS = {"node_modules", ".git", ".obsidian", ".trash", "__pycache__"}
+SKIP_DIRS = {"node_modules", ".git", ".obsidian", ".trash", "__pycache__", "Templates"}   # templates hold {{placeholders}}
 EXTS = {".md", ".markdown", ".txt", ".pdf"}
 MAX_BYTES = 2 * 1024 * 1024
 
@@ -47,26 +47,45 @@ def folders():
     return [Path(p.strip()).expanduser() for p in raw.split(";") if p.strip()]
 
 
-def iter_files():
-    """Yield (root, path, text) for every indexable file. Read-only."""
+def _walk():
+    """(root, path) for every indexable file, without reading any of them."""
     for root in folders():
         if not root.is_dir():
-            print(f"[data] folder not found, skipped: {root}")
             continue
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
             for name in filenames:
                 p = Path(dirpath) / name
-                if p.suffix.lower() not in EXTS:
-                    continue
-                try:
-                    if p.stat().st_size > MAX_BYTES:
-                        continue
-                    text = read_text(p)
-                except OSError:
-                    continue
-                if text.strip():
-                    yield root, p, text
+                if p.suffix.lower() in EXTS:
+                    yield root, p
+
+
+def signature():
+    """Cheap fingerprint of the vault (paths, sizes, mtimes): changes when any note is added, edited or removed."""
+    sig = []
+    for _, p in _walk():
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        sig.append((str(p), st.st_size, st.st_mtime_ns))
+    return hash(tuple(sorted(sig)))
+
+
+def iter_files():
+    """Yield (root, path, text) for every indexable file. Read-only."""
+    for root in folders():
+        if not root.is_dir():
+            print(f"[data] folder not found, skipped: {root}")
+    for root, p in _walk():
+        try:
+            if p.stat().st_size > MAX_BYTES:
+                continue
+            text = read_text(p)
+        except OSError:
+            continue
+        if text.strip():
+            yield root, p, text
 
 
 def read_text(p):

@@ -116,6 +116,7 @@ class Vault:
     def graph_json(self):
         return {
             "mode": data.mode(),
+            "version": _version,
             "nodes": [{"id": n.id, "title": n.title, "type": n.type, "deg": len(n.links), "rel": n.rel}
                       for n in self.notes],
             "edges": sorted(self.edges),
@@ -129,6 +130,7 @@ class Vault:
 
 
 _V = None
+_version = 0                     # bumps on every rebuild so the UI knows to redraw
 
 
 def get():
@@ -140,10 +142,15 @@ def get():
 
 
 def reload():
-    """Rebuild after JARVIS writes a note, so it appears in search and the graph."""
-    global _V
+    """Rebuild after JARVIS writes a note or the vault changes on disk."""
+    global _V, _version
     _V = Vault()
+    _version += 1
     return _V
+
+
+def version():
+    return _version
 
 
 def _frontmatter(text):

@@ -57,7 +57,11 @@ It checks every guardrail against the code and costs nothing. It also runs the s
 - Niches: write a score like `→ 12/15` in the note. **Find niches** ranks by it.
 - JARVIS writes **only** into a `JARVIS/` folder in your vault (`Scripts`, `Ideas`, `Journal`, `Notes`), and only new files.
 
-It reads Markdown, text and PDF. It skips `.obsidian`, `.git`, `node_modules` and anything over 2 MB. Scanned PDFs have no text layer and are skipped.
+It reads Markdown, text and PDF. It skips `Templates/`, `.obsidian`, `.git`, `node_modules` and anything over 2 MB. Scanned PDFs have no text layer and are skipped.
+
+Notes you add or edit in Obsidian reach JARVIS within about 30 seconds, no restart needed. It checks file dates and sizes, and the graph on screen redraws itself.
+
+A starter vault lives at `C:\Users\abara\Documents\JARVIS Vault`. Open **Start here** in it first.
 
 ## Using it
 

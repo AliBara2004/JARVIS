@@ -10,6 +10,7 @@ const EXAMPLES = [
 ];
 const EXAMPLE_EVERY = 4000;
 const CONVO_KEEP = 8;            // exchanges kept on screen
+const STATUS_EVERY_MS = 15000;   // how often to pick up model/voice status and vault changes
 
 // ---- voice tuning -----------------------------------------------------------
 const SILENCE_MS = 900;          // quiet this long after you've spoken ends your turn
@@ -76,10 +77,13 @@ async function boot() {
   // The model check runs in the background on the server; pick up its verdict.
   setTimeout(refreshStatus, 2500);
   window.addEventListener('focus', refreshStatus);
+  setInterval(refreshStatus, STATUS_EVERY_MS);
 }
 
 async function refreshStatus() {
-  try { STATUS = await api('/api/status'); renderStatus(STATUS); } catch { /* banner shows on next action */ }
+  try { STATUS = await api('/api/status'); renderStatus(STATUS); } catch { return; /* banner shows on next action */ }
+  // The server re-indexes when notes change in Obsidian; redraw if it has.
+  if (GRAPH && STATUS.graph_version !== GRAPH.version && !busy) reloadGraph();
 }
 
 // Tell the graph which parts of the screen the panels cover, so it centres in the free space.
