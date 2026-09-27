@@ -24,7 +24,7 @@ const IDLE_RESTART_MS = 15000;   // throw away silent recordings older than this
 const LEVEL_EVERY_MS = 50;       // setInterval, not requestAnimationFrame: keeps listening in a background tab
 const ECHO_GRACE_MS = 350;       // stay deaf this long after JARVIS stops talking
 const DEAD_MIC_MS = 4000;        // a mic reporting pure silence this long is muted or the wrong device
-const MAX_SPOKEN_CHARS = 1200;   // a reply longer than this is spoken up to here; the screen has the rest
+const MAX_SPOKEN_CHARS = 600;    // a reply longer than this is spoken up to here; the screen has the rest
 const PLAY_START_TIMEOUT_MS = 5000;  // reply audio that hasn't started by now is abandoned (text stays on screen)
 const BARGE_IN_THRESHOLD = 0.8;  // "Hey Jarvis" must be this clear to cut in while JARVIS talks (its own voice leaks into the mic)
 const CONVO_IDLE_MS = 20000;     // with "hey Jarvis" armed: this long without you speaking → back to standby
@@ -130,8 +130,8 @@ const short = m => String(m || '').replace(/^claude-/, '');
 function renderStatus(s) {
   $('#t-build').textContent = (s.code_version || '—').slice(0, 7);
   $('#t-model').textContent = s.model.fast_model ? `${short(s.model.model)} / ${short(s.model.fast_model)}` : short(s.model.model);
-  if (outOfCredit(s.voice.stt_error) && SR && !Fallback.stt) Fallback.stt = Date.now();
-  if (outOfCredit(s.voice.tts_error) && 'speechSynthesis' in window && !Fallback.tts) Fallback.tts = Date.now();
+  if (outOfCredit(s.voice.stt_error) && SR && !s.voice.local?.stt && !Fallback.stt) Fallback.stt = Date.now();
+  if (outOfCredit(s.voice.tts_error) && 'speechSynthesis' in window && !s.voice.local?.tts && !Fallback.tts) Fallback.tts = Date.now();
   const m = $('#mode');
   m.textContent = s.mode === 'demo' ? 'DEMO DATA' : 'LIVE DATA';
   m.className = 'badge ' + s.mode;
@@ -157,7 +157,9 @@ function renderStatus(s) {
   if (u.over_budget) warnBudgetOnce(u);
   $('#chips').innerHTML =
     chip(model) +
-    chip(fallbackOn('stt') || fallbackOn('tts') ? ['warn action', 'Voice · browser', 'ElevenLabs is out of credits or failing: hearing through the browser, speaking with a browser voice. Tries ElevenLabs again every 30 minutes. Click to choose the voice.']
+    chip((s.voice.out?.tts || s.voice.out?.stt) && (s.voice.local?.tts || s.voice.local?.stt)
+      ? ['ok action', 'Voice · local', `ElevenLabs is out, so JARVIS is using the voice pack on this PC: ${s.voice.local.tts ? 'Piper (' + (s.voice.local.voice || 'local') + ') speaks' : ''}${s.voice.local.tts && s.voice.local.stt ? ', ' : ''}${s.voice.local.stt ? 'whisper listens' : ''}. Free and private. Tries ElevenLabs again every 30 minutes.`]
+      : fallbackOn('stt') || fallbackOn('tts') ? ['warn action', 'Voice · browser', 'ElevenLabs is out of credits or failing: hearing through the browser, speaking with a browser voice. Tries ElevenLabs again every 30 minutes. Click to choose the voice.']
       : !s.voice.key ? ['warn', 'Voice off', 'No ElevenLabs key in .env']
       : s.voice.tts_error || s.voice.stt_error ? ['warn', 'Voice', s.voice.tts_error || s.voice.stt_error]
       : ['ok', 'Voice', 'ElevenLabs speech in and out. Press Mic or Space. Click to choose the fallback voice.'], 'voice-chip') +
@@ -321,7 +323,7 @@ async function ask(text, opts = {}) {
   };
   try {
     const res = await fetch('/api/ask/stream', { method: 'POST', signal: ctrl.signal,
-      body: JSON.stringify({ text, attachments: files.map(f => f.id) }),
+      body: JSON.stringify({ text, attachments: files.map(f => f.id), spoken: !!opts.speak }),
       headers: { 'Content-Type': 'application/json', 'X-Jarvis': '1' } });
     if (!res.ok || !res.body) throw new Error(`server said ${res.status}`);
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -876,6 +878,7 @@ function onAudioBlock(e) {
   Wake.feed(d, e.inputBuffer.sampleRate);
   if (Voice.state === 'standby') return;
   if (Voice.state !== 'listening' || now < Voice.deafUntil) return;
+  if (Voice.pcm && Voice.pcm.length < 3000) { Voice.pcm.push(new Float32Array(d)); Voice.pcmRate = e.inputBuffer.sampleRate; }
   if (lvl > SPEECH_LEVEL) {
     if (!Voice.speechStart) Voice.speechStart = now;
     Voice.lastLoud = now;
@@ -910,7 +913,7 @@ function startRecorder() {
   Voice.rec = new MediaRecorder(Voice.stream, Voice.mime ? { mimeType: Voice.mime } : undefined);
   Voice.rec.ondataavailable = e => { if (e.data.size) Voice.chunks.push(e.data); };
   Voice.rec.start(250);
-  Object.assign(Voice, { turnStart: performance.now(), speechStart: 0, lastLoud: 0, heard: false });
+  Object.assign(Voice, { turnStart: performance.now(), speechStart: 0, lastLoud: 0, heard: false, pcm: [] });
 }
 
 function stopRecorder() {
@@ -936,19 +939,29 @@ async function endTurn() {
   setVoiceState('thinking');                       // deaf from here until JARVIS finishes speaking
   const blob = await stopRecorder();
   let text = '';
-  if (fallbackOn('stt')) {
+  const send = async body => {
+    const r = await fetch('/api/listen', { method: 'POST', body,
+      headers: { 'Content-Type': body.type || 'audio/webm', 'X-Jarvis': '1' } });
+    const j = await r.json();
+    if (!r.ok) throw Object.assign(new Error(j.error || r.status), { local: j.local });
+    return j;
+  };
+  if (fallbackOn('stt') && !localVoice('stt')) {
     await fbListenStop();
     text = (Fallback.text + ' ' + Fallback.interim).trim();
   } else {
     if (!blob) return listenAgain();
     caption('Transcribing…');
+    const wav = localVoice('stt') ? turnWav() : null;
     try {
-      const r = await fetch('/api/listen', { method: 'POST', body: blob,
-        headers: { 'Content-Type': blob.type || 'audio/webm', 'X-Jarvis': '1' } });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || r.status);
+      // while ElevenLabs is out, send WAV straight away so whisper on this PC can read it
+      let j = await send(wav && STATUS?.voice?.out?.stt ? wav : blob).catch(async e => {
+        if (wav && e.local) return send(wav);          // ElevenLabs just failed: same turn, transcribed locally
+        throw e;
+      });
       text = j.text;
-      Fallback.stt = 0;                                // ElevenLabs works (again)
+      Voice.sttEngine = j.engine;
+      Fallback.stt = 0;
     } catch (e) {
       if (SR && (outOfCredit(e.message) || Fallback.stt)) {
         useFallback('stt', e.message);
@@ -967,6 +980,30 @@ async function endTurn() {
   await speechDone();
   listenAgain();
 }
+
+// A turn's raw audio as a 16 kHz mono WAV: what whisper (the local voice pack) reads.
+function turnWav() {
+  const chunks = Voice.pcm || [], rate = Voice.pcmRate || 48000;
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  if (!total) return null;
+  const step = rate / 16000, out = new Int16Array(Math.floor(total / step));
+  let i = 0, pos = 0, ci = 0, base = 0;
+  for (; i < out.length; i++) {
+    pos = Math.floor(i * step);
+    while (ci < chunks.length && pos >= base + chunks[ci].length) { base += chunks[ci].length; ci++; }
+    if (ci >= chunks.length) break;
+    const v = Math.max(-1, Math.min(1, chunks[ci][pos - base]));
+    out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+  }
+  const buf = new ArrayBuffer(44 + i * 2), dv = new DataView(buf);
+  const str = (o, t) => [...t].forEach((c, k) => dv.setUint8(o + k, c.charCodeAt(0)));
+  str(0, 'RIFF'); dv.setUint32(4, 36 + i * 2, true); str(8, 'WAVEfmt '); dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); str(36, 'data'); dv.setUint32(40, i * 2, true);
+  new Int16Array(buf, 44).set(out.subarray(0, i));
+  return new Blob([buf], { type: 'audio/wav' });
+}
+const localVoice = kind => !!STATUS?.voice?.local?.[kind];
 
 // ---------------------------------------------------------------- free voice fallback
 // When ElevenLabs is out of credits (or failing), JARVIS keeps talking with what the browser has:
@@ -1073,14 +1110,19 @@ function useVoice(name, btn) {
   caption(`Fallback voice: ${name.replace(/^Microsoft |Online |\(Natural\) /g, '')}`, 'dim');
 }
 
-function speakLocal(text) {
+async function speakLocal(text) {
+  try {
+    const r = await post('/api/sayable', { text });
+    if (r.text) text = r.text;
+  } catch { /* speak it as it is */ }
   setVoiceState('speaking');
   caption('');
+  await new Promise(r => setTimeout(r, 120));        // a breath between sentences
   return new Promise(done => {
     const u = new SpeechSynthesisUtterance(text);
     const v = fbVoice();
     if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
-    u.rate = 1.02; u.pitch = 0.95;
+    u.rate = 0.97; u.pitch = 0.95;
     let settled = false;
     const finish = () => { if (settled) return; settled = true; clearInterval(pulse); Voice.stopSpeaking = null; drawLevel(0); done(); };
     const pulse = setInterval(() => drawLevel(0.25 + Math.random() * 0.35), 90);   // no audio tap here: a gentle stand-in
@@ -1159,17 +1201,18 @@ function speechDone() {
 
 async function fetchSpeech(text, previous) {
   if (Speech.cancelled) return null;
-  if (fallbackOn('tts') && 'speechSynthesis' in window) return { local: text };
+  if (fallbackOn('tts') && !localVoice('tts') && 'speechSynthesis' in window) return { local: text };
   try {
     const r = await fetch('/api/speak', { method: 'POST', body: JSON.stringify({ text, previous_text: previous }),
       headers: { 'Content-Type': 'application/json', 'X-Jarvis': '1' } });
     if (!r.ok) throw new Error((await r.json()).error || r.status);
     const notice = r.headers.get('X-Voice-Notice');
     if (notice) banner(notice);
+    Voice.ttsEngine = r.headers.get('X-Voice-Engine');
     Fallback.tts = 0;
     return await r.blob();
   } catch (e) {
-    if ('speechSynthesis' in window && (outOfCredit(e.message) || Fallback.tts)) {
+    if (!localVoice('tts') && 'speechSynthesis' in window && (outOfCredit(e.message) || Fallback.tts)) {
       useFallback('tts', e.message);
       Fallback.tts = Date.now();
       return { local: text };

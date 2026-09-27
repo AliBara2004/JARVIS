@@ -202,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
     def _host_ok(self):
         return self.headers.get("Host", "") in ALLOWED_HOSTS
 
-    def _stream_ask(self, text, attachments=None):
+    def _stream_ask(self, text, attachments=None, spoken=False):
         """Newline-delimited JSON events while JARVIS answers, then {"type": "done", ...result}.
         HTTP/1.0: the response ends when the connection closes, so no chunked encoding needed."""
         self.send_response(200)
@@ -224,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 gone["yes"] = True
 
-        emit({"type": "done", **brain.ask(text, emit, attachments=attachments)})
+        emit({"type": "done", **brain.ask(text, emit, attachments=attachments, spoken=spoken)})
 
     # ------------------------------------------------------------ GET
     def do_GET(self):
@@ -302,9 +302,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "recording too long"}, 413)
             audio = self.rfile.read(n)
             try:
-                return self._json({"text": voice.stt(audio, self.headers.get("Content-Type", "audio/webm"))})
+                text, engine = voice.listen(audio, self.headers.get("Content-Type", "audio/webm"))
+                return self._json({"text": text, "engine": engine})
             except voice.VoiceError as e:
-                return self._json({"error": str(e)}, 502)
+                return self._json({"error": str(e), "local": voice.status()["local"]["stt"]}, 502)
 
         if n > MAX_BODY:
             return self._json({"error": "too large"}, 413)
@@ -313,19 +314,21 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._json({"error": "bad json"}, 400)
 
+        if path == "/api/sayable":                     # the same cleaning, for the browser's own voice
+            return self._json({"text": voice.speakable(str(body.get("text", ""))[:2000])})
         if path == "/api/speak":
             try:
-                audio = voice.tts(str(body.get("text", "")), str(body.get("previous_text", ""))[-500:])
+                audio, mime, engine = voice.speak(str(body.get("text", "")), str(body.get("previous_text", ""))[-500:])
             except voice.VoiceError as e:
                 return self._json({"error": str(e)}, 502)
-            notice = voice.status()["tts_error"]
-            return self._send(200, audio, "audio/mpeg", {"X-Voice-Notice": notice} if notice else None)
+            notice = voice.status()["tts_error"] if engine == "elevenlabs" else ""
+            return self._send(200, audio, mime, {"X-Voice-Engine": engine, **({"X-Voice-Notice": notice} if notice else {})})
 
         if path == "/api/ask":
             return self._json(brain.ask(str(body.get("text", ""))[:4000]))
         if path == "/api/ask/stream":
             ids = [str(a) for a in body.get("attachments") or []][:5]
-            return self._stream_ask(str(body.get("text", ""))[:4000], ids)
+            return self._stream_ask(str(body.get("text", ""))[:4000], ids, bool(body.get("spoken")))
         if path == "/api/confirm":
             return self._json(brain.confirm(str(body.get("id", "")), bool(body.get("ok"))))
         if path == "/api/reminders/seen":

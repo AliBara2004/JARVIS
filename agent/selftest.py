@@ -61,8 +61,8 @@ check("No API key names in browser code", not leaks, str(leaks))
 WRITE = re.compile(r"open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
 check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache), "
-      "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log) and reminders.py (data/reminders.json) write files",
-      writers == ["backup.py", "checkin.py", "data.py", "google.py", "market.py", "memory.py", "reminders.py", "status.py", "telegram.py", "usage.py"],
+      "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log), reminders.py (data/reminders.json) and localvoice.py (local/ setup, one temp WAV per turn) write files",
+      writers == ["backup.py", "checkin.py", "data.py", "google.py", "localvoice.py", "market.py", "memory.py", "reminders.py", "status.py", "telegram.py", "usage.py"],
       f"writers: {writers}")
 check("telegram.py only writes data/telegram.json", 'STATE = data.ROOT / "data" / "telegram.json"'
       in src(ROOT / "agent" / "telegram.py"))
@@ -270,6 +270,16 @@ check("'bench' finds 'Bench press'", fitness.matches("bench", "Bench press") and
 check("mini.py writes no files and only talks to JARVIS on localhost",
       not re.search(r"(?<![.\w])open\(|write_text|write_bytes", code_only(ROOT / "agent" / "mini.py"))
       and '"127.0.0.1"' in src(ROOT / "agent" / "mini.py"))
+
+print("\nHow JARVIS says things")
+import voice  # noqa: E402
+check("Money, times and jargon are said the way a person says them",
+      voice.speakable("NQ risk $250, CPI at 13:30 -> n8n $1,200/month") ==
+      "N Q risk 250 dollars, C P I at 1 30 pm to n eight n 1200 dollars per month")
+check("No markdown, links or emoji reach the voice",
+      voice.speakable("**Eval** see [[Risk Rules]] https://x.com 🚀") == "Eval see Risk Rules the link on screen")
+check("The local voice pack stays in local/ and is gitignored",
+      subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", "local/piper.zip"]).returncode == 0)
 
 print("\nReminders")
 import datetime as _dt  # noqa: E402
