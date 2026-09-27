@@ -1,9 +1,9 @@
-"""The local voice pack: Piper to speak and whisper.cpp to listen, both running on this PC.
+"""The local voice pack: Kokoro (or Piper) to speak and whisper.cpp to listen, all running on this PC.
 
 Free, offline and private. JARVIS uses them when ElevenLabs is out of credits or failing (voice.py
 decides), and the browser's own voice/recognition only if these aren't installed.
 
-    python agent/localvoice.py setup      download the programs and models into local/ (about 150 MB)
+    python agent/localvoice.py setup      download the programs and models into local/ (about 550 MB)
     python agent/localvoice.py test       speak a line to local/test.wav and transcribe it back
 
 Everything lives in local/ (gitignored). Downloads come from the projects' official releases and are
@@ -15,9 +15,11 @@ import io
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
 import wave
 import zipfile
@@ -30,6 +32,11 @@ PIPER_DIR = LOCAL / "piper"
 WHISPER_DIR = LOCAL / "whisper"
 VOICE = os.environ.get("JARVIS_PIPER_VOICE", "en_GB-alan-medium")
 WHISPER_MODEL = os.environ.get("JARVIS_WHISPER_MODEL", "ggml-base.en-q5_1.bin")
+KOKORO_DIR = LOCAL / "kokoro"
+KOKORO_VOICE = os.environ.get("JARVIS_KOKORO_VOICE", "bm_lewis")     # Ali's pick; bm_george, bm_daniel also British
+KOKORO_SPEED = float(os.environ.get("JARVIS_KOKORO_SPEED", "1.05"))
+KOKORO_FILES = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+KOKORO_PACKAGE = "kokoro-onnx==0.6.1"
 
 HF_VOICES = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB"
 DOWNLOADS = [   # (url, saved as, expected size or None)
@@ -69,14 +76,80 @@ def whisper_model():
     return p if p.exists() else None
 
 
+def kokoro_python():
+    p = KOKORO_DIR / "venv" / "Scripts" / "python.exe"
+    return p if p.exists() and (KOKORO_DIR / "kokoro-v1.0.onnx").exists() and (KOKORO_DIR / "voices-v1.0.bin").exists() else None
+
+
 def available():
-    return {"tts": bool(piper_exe() and voice_model()), "stt": bool(whisper_exe() and whisper_model()),
-            "voice": VOICE if voice_model() else None}
+    kokoro, piper = bool(kokoro_python()), bool(piper_exe() and voice_model())
+    return {"tts": kokoro or piper, "stt": bool(whisper_exe() and whisper_model()),
+            "voice": f"Kokoro {KOKORO_VOICE.split('_')[-1].title()}" if kokoro else VOICE if piper else None}
+
+
+class _Helper:
+    """Kokoro kept loaded in its own process (agent/kokoro_helper.py, run by the venv's Python)."""
+    def __init__(self):
+        self.proc, self.lock = None, threading.Lock()
+
+    def _read(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.proc.stdout.read(n - len(buf))
+            if not chunk:
+                raise RuntimeError("Kokoro helper stopped")
+            buf += chunk
+        return buf
+
+    def _start(self):
+        helper = data.ROOT / "agent" / "kokoro_helper.py"
+        self.proc = subprocess.Popen([str(kokoro_python()), str(helper), str(KOKORO_DIR)], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self._read(4)                      # "ready": the model has loaded
+
+    def say(self, text):
+        with self.lock:
+            for attempt in (1, 2):         # a crashed helper is restarted once
+                try:
+                    if not self.proc or self.proc.poll() is not None:
+                        self._start()
+                    req = json.dumps({"text": text, "voice": KOKORO_VOICE, "speed": KOKORO_SPEED}) + "\n"
+                    self.proc.stdin.write(req.encode("utf-8"))
+                    self.proc.stdin.flush()
+                    (n,) = struct.unpack(">I", self._read(4))
+                    if n:
+                        return self._read(n)
+                    raise RuntimeError("Kokoro couldn't say that")
+                except (OSError, RuntimeError, ValueError):
+                    if self.proc:
+                        self.proc.kill()
+                    self.proc = None
+                    if attempt == 2:
+                        raise
+
+
+_kokoro = _Helper()
+
+
+def warm():
+    """Load Kokoro in the background at start-up, so the first sentence is quick."""
+    if kokoro_python():
+        try:
+            _kokoro.say("Ready.")
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------ speaking (Piper)
 def tts(text):
-    """Speech for `text` as WAV bytes. Text should already be speakable()."""
+    """Speech for `text` as WAV bytes: Kokoro if installed, else Piper. Text should already be speakable()."""
+    if kokoro_python():
+        try:
+            return _kokoro.say(" ".join(text.split()))
+        except Exception:
+            if not (piper_exe() and voice_model()):
+                raise
     exe, model = piper_exe(), voice_model()
     if not (exe and model):
         raise RuntimeError("Local voice isn't installed. Run: python agent/localvoice.py setup")
@@ -150,6 +223,16 @@ def setup():
                 if (target / m).resolve() != target.resolve() and target.resolve() not in (target / m).resolve().parents:
                     raise RuntimeError(f"{zname} contains an unsafe path: {m}")
             z.extractall(target)
+    for name in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
+        p = _download(f"{KOKORO_FILES}/{name}", KOKORO_DIR / name)
+        sums.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  kokoro/{name}  {KOKORO_FILES}/{name}")
+    venv = KOKORO_DIR / "venv"
+    if not (venv / "Scripts" / "python.exe").exists():
+        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+    # truststore: use Windows' certificates (Norton inspects HTTPS with its own, which pip otherwise rejects)
+    subprocess.run([str(venv / "Scripts" / "python.exe"), "-m", "pip", "install", "-q", "--disable-pip-version-check",
+                    "--use-feature=truststore", KOKORO_PACKAGE], check=True)
+    sums.append(f"pip  {KOKORO_PACKAGE}  (into local/kokoro/venv)")
     (LOCAL / "SOURCES.txt").write_text("\n".join(sums) + "\n", encoding="utf-8")
     print("\n".join("  " + s for s in sums))
     print("installed:", available())

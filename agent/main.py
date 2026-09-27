@@ -391,6 +391,7 @@ def main():
     threading.Thread(target=watch_vault, daemon=True).start()
     telegram.start()
     reminders.start(notify=telegram.notify)
+    threading.Thread(target=voice.localvoice.warm, daemon=True).start()   # Kokoro loaded before the first reply
     backup.start()
     srv = Server((HOST, PORT), Handler)
     SERVER["srv"] = srv
