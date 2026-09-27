@@ -58,7 +58,8 @@ secrets_ = ["ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "GOOGLE_CLIENT_SECRET", "
 leaks = [(p.name, s) for p in UI for s in secrets_ if s in src(p)]
 check("No API key names in browser code", not leaks, str(leaks))
 
-WRITE = re.compile(r"open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
+# wave.open(buf, "wb") builds audio in memory (voice helpers), so it doesn't count as writing a file
+WRITE = re.compile(r"(?<!wave\.)open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
 check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache), "
       "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log), reminders.py (data/reminders.json) and localvoice.py (local/ setup, one temp WAV per turn) write files",
