@@ -28,7 +28,8 @@ CANCEL = re.compile(r"^\s*(no|nope|cancel|don'?t|stop|scrap that)\b[\s.!]*$", re
 
 # Ali asking, in his own words, for something to be kept. Needed for a write after untrusted text was read.
 ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this)"
-                           r"|add|mark|move|set|filmed|posted|replied|edit|change|update|fix|replace|remove|tidy|rewrite|undo)\b", re.I)
+                           r"|add|mark|move|set|filmed|posted|replied|edit|change|update|fix|replace|remove|tidy|rewrite|undo"
+                           r"|goals?|tick|cross|done|finished|did|today|trained|workout|gym|ran|lifted)\b", re.I)
 
 
 # Turns that go to the strong model (llm.MODEL); everything else goes to llm.FAST_MODEL.
@@ -282,6 +283,11 @@ def _model_turn(text, emit, readonly=False, attachments=None):
                     written.append(("stage", r["data"]["marked"]))
                 if r["data"].get("saved"):
                     written.append(("note", r["data"]["saved"]))
+                for k in ("ticked", "unticked"):
+                    if r["data"].get(k):
+                        written.append((k, r["data"][k]))
+                if r["data"].get("goals_added"):
+                    written.extend(("goal", g) for g in r["data"]["goals_added"])
             changed = changed or bool(isinstance(r["data"], dict) and r["data"].get("graph_changed"))
             cards += r["cards"]
             notes += r["notes"]
@@ -305,6 +311,8 @@ def _model_turn(text, emit, readonly=False, attachments=None):
             extra.append(f"I've noted: {what}")
         if kind == "stage" and not _said(reply, what):
             extra.append(f"Marked {what}.")
+        if kind in ("ticked", "unticked", "goal") and not _said(reply, what):
+            extra.append({"ticked": "Ticked: ", "unticked": "Unticked: ", "goal": "Added to today's goals: "}[kind] + what + ".")
         if kind == "note":
             title = what.rsplit("/", 1)[-1][11:-3]           # "JARVIS/Ideas/2026-09-26 Title.md" → "Title"
             if not _said(reply, title):

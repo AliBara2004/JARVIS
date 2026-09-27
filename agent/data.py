@@ -209,7 +209,7 @@ def create_event(title, start, minutes, notes=""):
 # write_note() creates a NEW markdown file under <vault>/JARVIS/<folder>/. It opens with mode "x",
 # so it can never overwrite, and there is no edit or delete anywhere in this module.
 NOTES_SUBDIR = "JARVIS"
-NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes", "Video ideas", "Prospects")
+NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes", "Video ideas", "Prospects", "Workouts")
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f\[\]#^]')
 
 
@@ -297,3 +297,49 @@ def replace_note(rel, new_text, expect_sha):
     tmp = p.with_name(p.name + ".jarvis-tmp")
     tmp.write_bytes(new_text.encode("utf-8"))
     os.replace(tmp, p)                        # all or nothing: never a half-written note
+
+
+# ---------------------------------------------------------------- today's goals (Daily note, Goals section only)
+DAILY_DIR = "Daily"
+
+
+def daily_rel(day):
+    return f"{DAILY_DIR}/{day.isoformat()}.md"
+
+
+def read_daily(day):
+    """That day's Daily note text, or None if it doesn't exist yet."""
+    root = vault_root()
+    if root is None:
+        raise RuntimeError("No vault folder set. Put your Obsidian vault path in JARVIS_FOLDERS in .env.")
+    p = root / daily_rel(day)
+    return p.read_bytes().decode("utf-8") if p.is_file() else None
+
+
+def daily_template(day):
+    """A new Daily note from Ali's Templates/Daily.md, or a bare one if he has no template."""
+    t = vault_root() / "Templates" / "Daily.md"
+    text = t.read_text(encoding="utf-8") if t.is_file() else "---\ntype: daily\ndate: {{date}}\n---\n# {{date}}\n"
+    return text.replace("{{date}}", day.isoformat())
+
+
+def save_goals(old_text, new_text):
+    """Write today's Daily note. Only the Goals section may differ from what was read, and only today's
+    note: anything else is refused. Creates the note from the template if it didn't exist (never overwrites)."""
+    import goals
+    day = clock.uk_today()
+    p = vault_root() / daily_rel(day)
+    base = old_text if old_text is not None else daily_template(day)
+    if goals.without_section(new_text) != goals.without_section(base):
+        raise RuntimeError("Refusing: that change reaches outside today's Goals section.")
+    if old_text is None:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "x", encoding="utf-8", newline="\n") as f:
+            f.write(new_text)
+        return daily_rel(day)
+    if p.read_bytes().decode("utf-8") != old_text:
+        raise RuntimeError("Today's note changed while I was editing it. Try again.")
+    tmp = p.with_name(p.name + ".jarvis-tmp")
+    tmp.write_bytes(new_text.encode("utf-8"))
+    os.replace(tmp, p)
+    return daily_rel(day)

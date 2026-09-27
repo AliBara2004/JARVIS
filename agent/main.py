@@ -159,6 +159,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(vault.get().note_json(int(q.get("id", ""))))
             except (ValueError, IndexError):
                 return self._json({"error": "no such note"}, 404)
+        if u.path == "/api/widgets":
+            return self._json(tools.widgets())
         if u.path == "/api/memory":
             return self._json({"facts": memory.all_facts()})
         if u.path == "/api/search":
@@ -236,6 +238,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._stream_ask(str(body.get("text", ""))[:4000], ids)
         if path == "/api/confirm":
             return self._json(brain.confirm(str(body.get("id", "")), bool(body.get("ok"))))
+        if path == "/api/goals":
+            try:
+                b = body
+                if b.get("action") == "add" and str(b.get("text", "")).strip():
+                    return self._json(tools.add_goal_from_widget(str(b["text"])))
+                if b.get("action") == "tick":
+                    return self._json(tools.set_goal(b.get("index"), b.get("done", True)))
+                return self._json({"error": "action must be add or tick"}, 400)
+            except (IndexError, ValueError, TypeError, RuntimeError) as e:
+                return self._json({"error": str(e)}, 409)
         if path == "/api/reset":
             brain.reset()
             return self._json({"ok": True})

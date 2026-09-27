@@ -18,7 +18,10 @@ except Exception:
     pass
 
 import brain  # noqa: E402
+import clock  # noqa: E402
 import data  # noqa: E402
+import fitness  # noqa: E402
+import goals  # noqa: E402
 import llm  # noqa: E402
 import memory  # noqa: E402
 import status  # noqa: E402
@@ -243,6 +246,30 @@ print("\nTalking without a model")
 for text, bad in [("hello jarvis", "Best match"), ("why?", "Best match"), ("can you hear me", "Nothing in your notes")]:
     reply = brain.fallback(text)["reply"]
     check(f"{text!r} gets conversation, not a search", bad not in reply, reply)
+
+print("\nGoals and workouts")
+day = "---\ntype: daily\n---\n# Day\n\nHow I feel: fine\n- [ ] not a goal\n"
+g, added = goals.add(day, ["Gym: legs", "Send Acme proposal", "gym: legs"])
+check("Goals go under ## Goals, duplicates skipped", added == ["Gym: legs", "Send Acme proposal"]
+      and [x["text"] for x in goals.parse(g)] == added)
+check("'done the gym' ticks the gym goal", goals.match(goals.parse(g), "done the gym") == 0
+      and goals.match(goals.parse(g), "walked the dog") is None)
+check("Ticking only changes the Goals section",
+      goals.without_section(goals.set_done(g, 1)) == goals.without_section(day) and goals.parse(goals.set_done(g, 1))[1]["done"])
+try:
+    data.save_goals(None, data.daily_template(clock.uk_today()) + "\nsneaky edit\n")
+    check("save_goals refuses changes outside the Goals section", False)
+except RuntimeError:
+    check("save_goals refuses changes outside the Goals section", True)
+check("save_goals only ever writes today's Daily note",
+      "daily_rel(day)" in src(ROOT / "agent" / "data.py") and "day = clock.uk_today()" in src(ROOT / "agent" / "data.py"))
+line = fitness.lift_line("Bench press", [(60.0, 8), (62.5, 6), (0.0, 10)])
+check("Workout lines read back exactly", fitness.parse_lifts("## Lifts\n" + line) == {"Bench press": [(60.0, 8), (62.5, 6), (0.0, 10)]})
+check("Pounds convert to kg", abs(fitness.parse_lifts("## Lifts\n- Squat: 225lb x 5")["Squat"][0][0] - 102.06) < 0.01)
+check("'bench' finds 'Bench press'", fitness.matches("bench", "Bench press") and not fitness.matches("squat", "Bench press"))
+check("mini.py writes no files and only talks to JARVIS on localhost",
+      not re.search(r"(?<![.\w])open\(|write_text|write_bytes", code_only(ROOT / "agent" / "mini.py"))
+      and '"127.0.0.1"' in src(ROOT / "agent" / "mini.py"))
 
 print("\nModel routing")
 if llm.ROUTING != "off" and llm.FAST_MODEL != llm.MODEL:

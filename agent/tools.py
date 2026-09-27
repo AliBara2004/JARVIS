@@ -19,6 +19,8 @@ import time
 
 import clock
 import data
+import fitness
+import goals
 import llm
 import market
 import memory
@@ -403,7 +405,7 @@ def draft_script(title, hook, beats, cta="", length_s=60, notes=""):
 
 # ------------------------------------------------------------------ write_note
 NOTE_TYPES = {"Scripts": "script", "Ideas": "idea", "Journal": "journal", "Notes": "note", "Video ideas": "video",
-              "Prospects": "prospect"}
+              "Prospects": "prospect", "Workouts": "workout"}
 
 
 def write_note(title, body, folder="Notes", links=None):
@@ -426,6 +428,195 @@ def write_note(title, body, folder="Notes", links=None):
                         rows=[{"text": title, "sub": rel, "note": node.id if node else None, "tag": "new"}])],
                   {"saved": rel, "first_line": first[:140], "graph_changed": True},
                   [node.id] if node else [])
+
+
+# ------------------------------------------------------------------ today's goals (Daily note, ## Goals)
+def _goals_card(items, title="Today's goals"):
+    done = sum(g["done"] for g in items)
+    rows = [{"text": g["text"], "tag": "done" if g["done"] else "open"} for g in items]
+    return card("goals", f"{title} · {done}/{len(items)} done", rows,
+                foot=f"In {data.daily_rel(clock.uk_today())}, under \"## Goals\". Tick them here, in Obsidian, or tell me.")
+
+
+def _goals_state():
+    today = clock.uk_today()
+    text = data.read_daily(today)
+    return text, goals.parse(text)
+
+
+def list_goals():
+    _, items = _goals_state()
+    y = goals.parse(data.read_daily(clock.uk_today() - dt.timedelta(days=1)))
+    left = [g["text"] for g in y if not g["done"]]
+    info = {"goals": items, "done": sum(g["done"] for g in items), "yesterday_unfinished": left}
+    if not items:
+        say = "No goals set for today yet." + (f" Yesterday left {len(left)} unfinished." if left else "")
+        return result(say, [], info)
+    return result(f"{info['done']} of {len(items)} done.", [_goals_card(items)], info)
+
+
+def add_goals(goals_):
+    text, _ = _goals_state()
+    new, added = goals.add(text if text is not None else data.daily_template(clock.uk_today()), goals_)
+    if not added:
+        return result("Those are already on today's list.", [], {"added": []})
+    rel = data.save_goals(text, new)
+    v = vault.reload()
+    items = goals.parse(new)
+    node = next((n.id for n in v.notes if n.rel == rel), None)
+    return result(f"Added to today's goals: {', '.join(added)}.", [_goals_card(items)],
+                  {"goals_added": added, "goals": items, "graph_changed": text is None}, [node] if node is not None else [])
+
+
+def tick_goal(goal, done=True):
+    text, items = _goals_state()
+    i = goals.match(items, goal)
+    if i is None:
+        return result("I couldn't tell which goal you meant.", [_goals_card(items)] if items else [],
+                      {"error": "no matching goal", "goals": [g["text"] for g in items]})
+    if items[i]["done"] == bool(done):
+        return result(f"\"{items[i]['text']}\" was already {'ticked' if done else 'open'}.", [], {"goals": items})
+    new = goals.set_done(text, i, bool(done))
+    data.save_goals(text, new)
+    vault.reload()
+    items = goals.parse(new)
+    left = [g["text"] for g in items if not g["done"]]
+    return result(f"{'Ticked' if done else 'Unticked'}: {items[i]['text']}.", [_goals_card(items)],
+                  {"ticked" if done else "unticked": items[i]["text"], "remaining": left, "goals": items})
+
+
+# ------------------------------------------------------------------ workouts (JARVIS/Workouts)
+def _training_card(s, extra_rows=()):
+    last = s["last"]
+    rows = list(extra_rows) + [
+        {"text": f"{s['this_week']} this week", "sub": f"{s['week_streak']}-week streak · {s['day_streak']}-day streak"},
+        {"text": f"Last: {last['title']}" if last else "Nothing logged yet",
+         "sub": ("today" if last["days_ago"] == 0 else f"{last['days_ago']} days ago") if last else "",
+         "note": last["id"] if last else None}]
+    return card("training", "Training", rows, foot="One note per session in JARVIS/Workouts.")
+
+
+def log_workout(title="", lifts=None, activity="", distance_km=None, cardio_minutes=None, duration_min=None,
+                notes="", unit="kg"):
+    to_kg = fitness.LB if str(unit).lower().startswith("lb") else 1
+    parsed = {}
+    for ex in lifts or []:
+        name = str(ex.get("exercise", "")).strip()
+        sets = [(round(float(s.get("weight") or 0) * to_kg, 2), int(s.get("reps") or 0)) for s in ex.get("sets") or []]
+        sets = [(w, r) for w, r in sets if r > 0]
+        if name and sets:
+            parsed[name] = sets
+    km = float(distance_km) if distance_km else None
+    cmin = float(cardio_minutes) if cardio_minutes else None
+    if not parsed and not activity and not duration_min and not notes:
+        return result("Tell me what you did and I'll log it.", [], {"error": "nothing to log"})
+    kind = "gym" if parsed else "cardio" if activity else "session"
+    title = (title or ", ".join(list(parsed)[:3]) or activity or "Workout").strip()
+    today = clock.uk_today()
+    beaten = fitness.new_bests(fitness.sessions(before=today), parsed, activity, km, cmin)
+
+    body = []
+    if parsed:
+        body += ["## Lifts"] + [fitness.lift_line(n, s) for n, s in parsed.items()] + [""]
+    if activity:
+        bits = [f"{km:g} km" if km else "", f"in {fitness.fmt_time(cmin)}" if cmin else "",
+                f"({fitness.fmt_time(cmin / km)}/km)" if km and cmin else ""]
+        body += ["## Cardio", f"- {activity}: " + " ".join(b for b in bits if b), ""]
+    if beaten:
+        body += ["## Personal bests"] + [f"- {b}" for b in beaten] + [""]
+    if notes:
+        body += ["## Notes", notes.strip()]
+    meta = {"type": "workout", "date": today.isoformat(), "kind": kind,
+            "created": clock.uk_now().strftime("%Y-%m-%d %H:%M"), "source": "jarvis"}
+    for k, v in (("duration_min", duration_min), ("activity", activity), ("distance_km", km), ("time_min", cmin)):
+        if v:
+            meta[k] = v
+    try:
+        rel = data.write_note("Workouts", title, "\n".join(body).strip() or "(no details)", meta)
+    except Exception as e:
+        return result(f"I couldn't save it: {e}", [card("error", "Workout not saved", foot=str(e))], {"error": str(e)})
+    v = vault.reload()
+    node = next((n.id for n in v.notes if n.rel == rel), None)
+    s = fitness.summary()
+    rows = [{"text": f"Personal best: {b}", "tag": "PB"} for b in beaten]
+    say = f"Logged: {title}." + (f" Personal best: {'; '.join(beaten)}." if beaten else "")
+    return result(say, [_training_card(s, rows)],
+                  {"saved": rel, "personal_bests": beaten, "stats": s, "graph_changed": True},
+                  [node] if node is not None else [])
+
+
+def workout_stats(exercise=""):
+    s = fitness.summary()
+    hist = fitness.sessions()
+    info = {"stats": s}
+    rows = []
+    if exercise:
+        done = [(x["date"], name, sets) for x in hist for name, sets in x["lifts"].items()
+                if fitness.matches(exercise, name)]
+        runs = [x for x in hist if x["activity"] and fitness.matches(exercise, x["activity"])]
+        info["history"] = [{"date": d.isoformat(), "sets": sets} for d, _, sets in done[-8:]] or \
+                          [{"date": x["date"].isoformat(), "km": x["km"], "minutes": x["cardio_min"]} for x in runs[-8:]]
+        rows = [{"text": f"{fitness.fmt_w(max(sets)[0])} x {max(sets)[1]}", "sub": clock.fmt_day(d)} for d, _, sets in done[-6:]]
+        rows += [{"text": f"{x['km']:g} km" + (f" in {fitness.fmt_time(x['cardio_min'])}" if x["cardio_min"] else ""),
+                  "sub": clock.fmt_day(x["date"])} for x in runs[-6:] if x["km"]]
+        if not rows:
+            return result(f"Nothing logged for {exercise} yet.", [_training_card(s)], info)
+    lifts, cardio = fitness.bests(hist)
+    info["bests"] = {v["name"]: fitness.fmt_w(v["set"][0]) + f" x {v['set'][1]}" for v in lifts.values()}
+    info["cardio_bests"] = {v["name"]: {"km": v.get("km"),
+                                        "pace": fitness.fmt_time(v["pace"]) + "/km" if v.get("pace") else None}
+                            for v in cardio.values()}
+    say = (f"{s['this_week']} sessions this week, {s['week_streak']}-week streak." if s["total"]
+           else "Nothing logged yet.")
+    return result(say, [_training_card(s, rows)], info)
+
+
+# ------------------------------------------------------------------ widgets (JARVIS page + desktop mini-window)
+_next_cache = {"at": 0.0, "value": None}
+NEXT_EVERY = 300          # calendar is re-read at most every 5 minutes for the widgets
+
+
+def _next_event():
+    if time.time() - _next_cache["at"] < NEXT_EVERY:
+        return _next_cache["value"]
+    now = clock.uk_now()
+    value = None
+    try:
+        for e in data.calendar(now.date(), 2):
+            if e.get("start", "") > now.strftime("%Y-%m-%dT%H:%M"):
+                day = "today" if e["start"][:10] == now.date().isoformat() else "tomorrow"
+                value = {"title": e["title"], "when": f"{day} {e['start'][11:16]}".strip()}
+                break
+    except Exception:
+        value = {"error": "calendar unavailable"}
+    _next_cache.update(at=time.time(), value=value)
+    return value
+
+
+def widgets():
+    """Everything the widgets show, in one small read. No model calls, nothing paid."""
+    try:
+        _, items = _goals_state()
+    except Exception as e:
+        items = [{"text": f"(can't read today's note: {e})", "done": False}]
+    u = usage.summary()
+    return {"date": clock.uk_today().isoformat(), "goals": items,
+            "training": fitness.summary(), "next": _next_event(),
+            "spend": {"usd": round(u["today"]["usd"], 2), "budget": u["budget_usd"],
+                      "models": {m: round(v["usd"], 2) for m, v in u["today"].get("models", {}).items()}}}
+
+
+def set_goal(index, done):
+    """A tick from a widget click: Ali's own hand, by position."""
+    text, items = _goals_state()
+    data.save_goals(text, goals.set_done(text, int(index), bool(done)))
+    vault.reload()
+    return widgets()
+
+
+def add_goal_from_widget(text):
+    add_goals([text])
+    return widgets()
 
 
 # ------------------------------------------------------------------ market_brief (pre-session)
@@ -1099,6 +1290,43 @@ SPECS = [
                     "what slipped (overdue tasks, scripts not filmed, prospects gone quiet); and the week ahead "
                     "(diary and red folders).",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "list_goals",
+     "description": "Today's goals and which are done, plus yesterday's unfinished ones (offer to carry them over).",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "add_goals",
+     "description": "Add goals to Ali's list for today (checkboxes under ## Goals in today's Daily note). Use when he "
+                    "says what he wants to get done today. Short items in his words, one per goal.",
+     "input_schema": {"type": "object", "properties": {
+         "goals_": {"type": "array", "items": {"type": "string"}, "description": "One short goal per item"}},
+         "required": ["goals_"]}},
+    {"name": "tick_goal",
+     "description": "Tick off one of today's goals when Ali says he's done it (\"done the gym\", \"sent the "
+                    "proposal\"). done=false unticks it. Happens immediately; say which goal you ticked.",
+     "input_schema": {"type": "object", "properties": {
+         "goal": {"type": "string", "description": "The goal as he said it; it's matched to the list"},
+         "done": {"type": "boolean", "description": "false to untick"}},
+         "required": ["goal"]}},
+    {"name": "log_workout",
+     "description": "Log a training session Ali tells you about into JARVIS/Workouts. Lifts with sets (weight + reps; "
+                    "weight 0 = bodyweight), cardio with distance and time, or just what he did and for how long. "
+                    "Returns any personal bests: say them.",
+     "input_schema": {"type": "object", "properties": {
+         "title": {"type": "string", "description": "Short: 'Legs', 'Push day', '5k run'"},
+         "lifts": {"type": "array", "items": {"type": "object", "properties": {
+             "exercise": {"type": "string"},
+             "sets": {"type": "array", "items": {"type": "object", "properties": {
+                 "weight": {"type": "number"}, "reps": {"type": "integer"}}, "required": ["reps"]}}},
+             "required": ["exercise", "sets"]}},
+         "unit": {"type": "string", "enum": ["kg", "lb"], "description": "Unit of the weights he said; default kg"},
+         "activity": {"type": "string", "description": "Cardio: run, cycle, row, walk, swim"},
+         "distance_km": {"type": "number"},
+         "cardio_minutes": {"type": "number", "description": "Cardio time in minutes (27.5 = 27:30)"},
+         "duration_min": {"type": "number", "description": "Whole session length"},
+         "notes": {"type": "string", "description": "Anything else he said, in his words"}}}},
+    {"name": "workout_stats",
+     "description": "Training so far: sessions this week, streaks, last session, personal bests. With exercise, "
+                    "that lift's (or run's) recent history.",
+     "input_schema": {"type": "object", "properties": {"exercise": {"type": "string"}}}},
     {"name": "remember",
      "description": "Store one fact about Ali in JARVIS's memory, loaded into every future conversation. Use when he "
                     "asks you to remember something, or tells you something about himself that will still matter in "
@@ -1136,13 +1364,16 @@ FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox
          "remember": remember, "market_brief": market_brief, "schedule_event": schedule_event,
          "content_board": content_board, "set_status": set_status, "find_prospects": find_prospects,
          "add_prospect": add_prospect, "weekly_review": weekly_review, "backup_notes": backup_notes,
-         "edit_note": edit_note, "undo_last_edit": undo_last_edit}
+         "edit_note": edit_note, "undo_last_edit": undo_last_edit, "list_goals": list_goals,
+         "add_goals": add_goals, "tick_goal": tick_goal, "log_workout": log_workout,
+         "workout_stats": workout_stats}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches", "find_prospects",
                      "weekly_review", "attachment"}
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
-WRITES = {"remember", "write_note", "set_status", "add_prospect", "edit_note", "undo_last_edit"}
+WRITES = {"remember", "write_note", "set_status", "add_prospect", "edit_note", "undo_last_edit", "add_goals",
+          "tick_goal", "log_workout"}
 
 
 def run(name, args):

@@ -66,6 +66,13 @@ Text or voice-note JARVIS from anywhere, while it's running on your PC. Nothing 
 - JARVIS must be running for replies.
 - Photos and files aren't supported yet.
 
+## Goals, workouts and widgets
+
+- **Goals:** "Today I want to hit the gym, send the Acme proposal and film one video" adds them as checkboxes under `## Goals` in today's Daily note (`Daily/YYYY-MM-DD.md`, made from `Templates/Daily.md` if it doesn't exist yet). "Done the gym" ticks it straight away, no confirm, and JARVIS says which one. "Untick the gym" undoes it. Tick them in Obsidian, on the page or in the mini-window too. In the morning JARVIS offers to carry over yesterday's unfinished goals; it never does it unasked.
+- **Workouts:** "Did push: bench 60 kilos 3 sets of 8, then pull-ups 3 sets of 10" or "ran 5k in 27 minutes" or "played football for an hour". One note per session in `JARVIS/Workouts`. JARVIS tells you when you beat a personal best (heaviest set, longest distance, fastest pace). "How's my bench going?" shows the history. Hand-typed lines like `- Squat: 100kg x 5, 100kg x 5` under `## Lifts` count too.
+- **Widgets (on the page):** Today's goals (click to tick, type to add), training streak, next calendar event and spend today, in the right panel. **Edit** lets you hide, show and reorder them (drag or ↑↓). Remembered in this browser.
+- **JARVIS Mini (desktop):** the **JARVIS Mini** desktop shortcut opens a small always-on-top window with the same widgets. Drag the header to move it, click a goal to tick it, type in the box and press Enter to add one, right-click for the menu, × to close. It needs JARVIS running and reconnects by itself.
+
 ## Backing up your notes
 
 Your vault is backed up to a **private** GitHub repo (`JARVIS-vault`), set with `JARVIS_BACKUP_REMOTE` in `.env`.
@@ -138,6 +145,8 @@ The wake word's `THRESHOLD` is at the top of `ui/wake.js`. Lower it if it misses
 | find_prospects | Real businesses in a niche with a concrete reason to need automation (paid web search, asks first). Businesses only, never individuals' contact details |
 | add_prospect | Saves the ones you pick as leads in `JARVIS/Prospects` |
 | edit_note / undo_last_edit | "Change my risk per trade to $300 in Risk Rules": shows the exact change, applies it when you confirm. "Undo that edit" puts it back |
+| list_goals / add_goals / tick_goal | Today's goals in your Daily note. Ticking happens straight away and is said out loud; only the `## Goals` section of today's note can change this way |
+| log_workout / workout_stats | Logs a session to `JARVIS/Workouts` and calls out personal bests; streaks, this week, and one lift's or run's history |
 | weekly_review | Your week: videos filmed and posted, new leads and moves, notes written, spend; what slipped; and the week ahead (diary + red folders). **Week** button |
 | schedule_event | Proposes a calendar event. It's added only when you confirm; nobody is invited |
 
@@ -149,6 +158,7 @@ With no model (no key, no credit, or no connection), JARVIS still routes by keyw
 |---|---|
 | Never send | No send code exists. Gmail permissions are read + drafts (drafts only after you tap; no `gmail.send`, no draft-sending code). Calendar events have no attendees and `sendUpdates=none` |
 | Change your notes only when you ask | New notes go to `JARVIS/` (exclusive-create). Editing an existing note (`edit_note`) needs your request in your own words, shows the exact change, and waits for your confirm; it refuses if the note changed since the preview, writes atomically, and "undo that edit" restores it. Never from emails, files, web pages or forwarded messages. No deleting notes |
+| Goal ticks can't touch the rest of your note | `data.save_goals` writes only today's Daily note and refuses the write if anything outside `## Goals` differs |
 | Never write memory silently | `memory.py` writes only to `memory/`. `brain.py` appends the fact to the spoken reply if the model didn't say it |
 | Never spend without asking | Web search becomes a pending action you confirm. The model has no tool that can confirm; only your click or your own "confirm" can |
 | Never invent / always qualify | The prompt, plus qualifiers written into the data ("simulated, not withdrawable", "estimated from plan tier") |

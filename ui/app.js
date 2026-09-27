@@ -311,6 +311,7 @@ async function ask(text, opts = {}) {
     if (!r) throw new Error('the reply was cut off');
     if (r.graph_changed) await reloadGraph();
     fillExchange(ex, r);
+    refreshWidgets();
     banner(r.error || '');
   } catch (e) {
     if (e.name === 'AbortError') fillExchange(ex, { reply: shown ? `${shown.trim()} …` : '(interrupted)', cards: [], mode: 'direct' });
@@ -363,7 +364,7 @@ function fillExchange(ex, r) {
 
 function renderCard(c) {
   const rows = c.rows.map(r => {
-    const tagCls = r.tag === 'new' ? 'new' : r.tag === 'overdue' ? 'hot' : '';
+    const tagCls = r.tag === 'new' ? 'new' : r.tag === 'overdue' ? 'hot' : (r.tag === 'done' || r.tag === 'PB') ? r.tag : '';
     const attrs = r.note != null ? `data-id="${r.note}" class="row link"` : r.url ? `class="row"` : 'class="row"';
     const title = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.text)}</a>` : esc(r.text);
     return `<div ${attrs}>
@@ -989,6 +990,7 @@ function micButton() {
 function bindUI() {
   rotatePlaceholder();
   bindAttachments();
+  bindWidgets();
   $('#ask').addEventListener('submit', e => { e.preventDefault(); ask($('#q').value); });
   $('#brief').addEventListener('click', () => ask('Brief me.'));
   $('#plan').addEventListener('click', () => ask('Plan my day.'));
@@ -1088,6 +1090,127 @@ function bindUI() {
     }
     else if ((e.key === 'f' || e.key === 'F') && !typing) Graph.fit();
   });
+}
+
+// ---------------------------------------------------------------- widgets
+// Small live cards in the right panel. Which ones show, and their order, is a per-browser
+// preference (localStorage); the data comes from /api/widgets and costs nothing.
+const WIDGETS_EVERY_MS = 20000;
+const WIDGET_PREF = 'jarvis.widgets';
+const WIDGET_DEFS = {
+  goals:    { title: 'Today', render: wGoals },
+  training: { title: 'Training', render: wTraining },
+  next:     { title: 'Next up', render: wNext },
+  spend:    { title: 'Spend today', render: wSpend },
+};
+const Widgets = { data: null, editing: false, pref: { order: Object.keys(WIDGET_DEFS), hidden: [] } };
+try { Object.assign(Widgets.pref, JSON.parse(localStorage.getItem(WIDGET_PREF) || '{}')); } catch {}
+for (const k of Object.keys(WIDGET_DEFS)) if (!Widgets.pref.order.includes(k)) Widgets.pref.order.push(k);
+
+function saveWidgetPref() { try { localStorage.setItem(WIDGET_PREF, JSON.stringify(Widgets.pref)); } catch {} }
+
+function wGoals(d) {
+  const g = d.goals || [], done = g.filter(x => x.done).length;
+  const list = g.map((x, i) => `<div class="goal ${x.done ? 'done' : ''}" data-goal="${i}" data-done="${x.done ? 1 : 0}">
+      <span class="box"></span><span class="gt">${esc(x.text)}</span></div>`).join('');
+  return { badge: g.length ? `${done}/${g.length}` : '',
+    html: (list || '<div class="sub">No goals yet. Add one, or tell me what you want done today.</div>') +
+      (g.length ? `<div class="meter"><i style="width:${Math.round(100 * done / g.length)}%"></i></div>` : '') +
+      '<input class="goal-add" id="goal-add" placeholder="+ add a goal" maxlength="200">' };
+}
+function wTraining(d) {
+  const t = d.training || {};
+  if (!t.total) return { html: '<div class="sub">Nothing logged yet. Tell me what you trained.</div>' };
+  const last = t.last ? `${esc(t.last.title)} · ${t.last.days_ago === 0 ? 'today' : t.last.days_ago === 1 ? 'yesterday' : t.last.days_ago + ' days ago'}` : '';
+  return { badge: `${t.day_streak}d streak`,
+    html: `<div class="big">${t.this_week} this week</div><div class="sub">${t.week_streak}-week streak</div><div class="sub">Last: ${last}</div>` };
+}
+function wNext(d) {
+  const n = d.next;
+  if (!n) return { html: '<div class="sub">Nothing on the calendar in the next two days.</div>' };
+  if (n.error) return { html: `<div class="sub">${esc(n.error)}</div>` };
+  return { html: `<div class="big">${esc(n.when)}</div><div class="sub">${esc(n.title)}</div>` };
+}
+function wSpend(d) {
+  const s = d.spend || {}, pct = s.budget ? Math.min(100, Math.round(100 * s.usd / s.budget)) : 0;
+  const split = Object.entries(s.models || {}).map(([m, v]) => `${esc(m.replace('claude-', ''))} $${v.toFixed(2)}`).join(' · ');
+  return { badge: `of $${(s.budget || 0).toFixed(0)}`,
+    html: `<div class="big">$${(s.usd || 0).toFixed(2)}</div>${split ? `<div class="sub">${split}</div>` : ''}<div class="meter"><i style="width:${pct}%"></i></div>` };
+}
+
+function renderWidgets() {
+  const box = $('#widgets'), d = Widgets.data;
+  if (!d) return;
+  const typing = document.activeElement?.id === 'goal-add' ? document.activeElement.value : null;
+  box.innerHTML = Widgets.pref.order.map(k => {
+    const def = WIDGET_DEFS[k], off = Widgets.pref.hidden.includes(k);
+    if (!def || (off && !Widgets.editing)) return '';
+    const w = def.render(d);
+    return `<div class="widget ${off ? 'off' : ''}" data-w="${k}" draggable="${Widgets.editing}">
+      <h4><span>${def.title}</span><span class="wctl"><button data-wmove="-1">↑</button><button data-wmove="1">↓</button>
+        <button data-wtoggle>${off ? 'show' : 'hide'}</button></span>${w.badge && !Widgets.editing ? `<b>${esc(w.badge)}</b>` : ''}</h4>
+      ${w.html}</div>`;
+  }).join('');
+  if (typing !== null) { const i = $('#goal-add'); if (i) { i.value = typing; i.focus(); } }
+}
+
+async function refreshWidgets() {
+  try { Widgets.data = await api('/api/widgets'); renderWidgets(); } catch {}
+}
+
+function bindWidgets() {
+  const sec = document.querySelector('.widgets'), box = $('#widgets');
+  $('#widgets-edit').addEventListener('click', () => {
+    Widgets.editing = !Widgets.editing;
+    sec.classList.toggle('editing', Widgets.editing);
+    $('#widgets-edit').textContent = Widgets.editing ? 'done' : 'edit';
+    renderWidgets();
+  });
+  box.addEventListener('click', async e => {
+    const w = e.target.closest('.widget')?.dataset.w;
+    const mv = e.target.closest('[data-wmove]'), tg = e.target.closest('[data-wtoggle]');
+    const order = Widgets.pref.order;
+    if (mv) {
+      const i = order.indexOf(w), j = i + Number(mv.dataset.wmove);
+      if (j >= 0 && j < order.length) { [order[i], order[j]] = [order[j], order[i]]; saveWidgetPref(); renderWidgets(); }
+      return;
+    }
+    if (tg) {
+      const h = Widgets.pref.hidden;
+      Widgets.pref.hidden = h.includes(w) ? h.filter(x => x !== w) : [...h, w];
+      saveWidgetPref(); renderWidgets();
+      return;
+    }
+    const g = e.target.closest('[data-goal]');
+    if (g && !Widgets.editing) {
+      g.classList.toggle('done');                     // feels instant; the server's answer redraws it
+      try { Widgets.data = await post('/api/goals', { action: 'tick', index: Number(g.dataset.goal), done: g.dataset.done !== '1' }); }
+      catch (err) { banner(`Couldn't tick that: ${err.message}`); }
+      renderWidgets();
+    }
+  });
+  box.addEventListener('keydown', async e => {
+    if (e.target.id !== 'goal-add' || e.key !== 'Enter' || !e.target.value.trim()) return;
+    const text = e.target.value.trim();
+    e.target.value = '';
+    try { Widgets.data = await post('/api/goals', { action: 'add', text }); renderWidgets(); $('#goal-add')?.focus(); }
+    catch (err) { banner(`Couldn't add that: ${err.message}`); }
+  });
+  // drag to reorder while editing
+  let dragged = null;
+  box.addEventListener('dragstart', e => { dragged = e.target.closest('.widget')?.dataset.w; });
+  box.addEventListener('dragover', e => { if (dragged) e.preventDefault(); });
+  box.addEventListener('drop', e => {
+    const over = e.target.closest('.widget')?.dataset.w;
+    if (!dragged || !over || over === dragged) return;
+    const o = Widgets.pref.order;
+    o.splice(o.indexOf(dragged), 1);
+    o.splice(o.indexOf(over), 0, dragged);
+    dragged = null; saveWidgetPref(); renderWidgets();
+  });
+  refreshWidgets();
+  setInterval(refreshWidgets, WIDGETS_EVERY_MS);
+  window.addEventListener('focus', refreshWidgets);
 }
 
 boot();
