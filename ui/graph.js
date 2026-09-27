@@ -1,6 +1,6 @@
-// Brain graph: force-directed, canvas-rendered.
+// Brain graph, 2D fallback (graph3d.js is used wherever WebGL works): force-directed, canvas-rendered.
 // Repulsion uses a spatial grid with a distance cutoff, so cost stays near-linear.
-const Graph = (() => {
+window.Graph2D = (() => {
   // ---- tuning ---------------------------------------------------------------
   const CELL = 150;             // repulsion cutoff and grid cell size, world px
   const REPEL = 2600;

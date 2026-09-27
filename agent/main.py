@@ -40,7 +40,7 @@ UI = (data.ROOT / "ui").resolve()
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
          ".ico": "image/x-icon", ".json": "application/json", ".mjs": "text/javascript; charset=utf-8",
-         ".wasm": "application/wasm", ".onnx": "application/octet-stream"}
+         ".wasm": "application/wasm", ".onnx": "application/octet-stream", ".woff2": "font/woff2"}
 REINDEX_EVERY = 30               # seconds between checks for notes added or edited in Obsidian
 MAX_BODY = 64 * 1024
 SERVER = {}                      # the running server, so /api/shutdown can stop it
@@ -66,6 +66,43 @@ def code_version():
 CODE_VERSION = code_version()
 
 
+_proc = {"cpu": None, "at": 0.0, "pct": 0.0}
+
+
+def proc_stats():
+    """JARVIS's own process: CPU share since the last look, and memory in use. Stdlib only."""
+    t, now = os.times(), time.time()
+    cpu = t.user + t.system
+    if _proc["cpu"] is not None and now - _proc["at"] > 0.5:
+        _proc["pct"] = max(0.0, 100 * (cpu - _proc["cpu"]) / (now - _proc["at"]) / (os.cpu_count() or 1))
+    if _proc["cpu"] is None or now - _proc["at"] > 0.5:
+        _proc.update(cpu=cpu, at=now)
+    mem = 0.0
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] +                            [(f, ctypes.c_size_t) for f in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                                           "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                                                           "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+            pmc = PMC(); pmc.cb = ctypes.sizeof(PMC)
+            k32 = ctypes.WinDLL("kernel32")
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            info = k32.K32GetProcessMemoryInfo                 # argtypes matter: a 64-bit handle gets truncated without them
+            info.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+            info.restype = wintypes.BOOL
+            if info(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+                mem = pmc.WorkingSetSize / 2**20
+        else:
+            import resource
+            mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    except Exception:
+        pass
+    return {"cpu_pct": round(_proc["pct"], 1), "mem_mb": round(mem), "threads": threading.active_count()}
+
+
 def status():
     return {
         "mode": data.mode(),
@@ -83,7 +120,19 @@ def status():
         "checkin": checkin.status(),
         "backup": backup.status(),
         "pending": tools.pending_list(),
+        "vault": data.vault_root().name if data.vault_root() else "",     # for obsidian:// links
+        "proc": proc_stats(),
     }
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        """A tab that reloads or closes mid-reply hangs up on us. That's normal, not an error worth a traceback."""
+        if isinstance(sys.exc_info()[1], (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -295,7 +344,7 @@ def main():
     threading.Thread(target=watch_vault, daemon=True).start()
     telegram.start()
     backup.start()
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    srv = Server((HOST, PORT), Handler)
     SERVER["srv"] = srv
     print(f"JARVIS · {data.mode()} mode · {len(vault.get().notes)} notes · {len(vault.get().edges)} links · model {llm.MODEL}" + (f" (chat on {llm.FAST_MODEL})" if llm.ROUTING != "off" else ""))
     print(f"open {ORIGIN}   (Ctrl+C to stop)")

@@ -33,6 +33,7 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let GRAPH = null;
+let Graph = null;                // graph3d.js (WebGL) or graph.js (2D fallback), picked at boot
 let STATUS = null;
 let busy = false;
 const hiddenTypes = new Set();
@@ -58,6 +59,17 @@ function banner(msg) {
 
 // ---------------------------------------------------------------- boot
 async function boot() {
+  Graph = window.Graph3D || window.Graph2D;
+  // The 3D files can be held back by a security scanner the first time (Norton on this PC). If we had
+  // to fall back to 2D on a machine that can do WebGL, reload once: the next try usually gets through.
+  try {
+    const gl = !!document.createElement('canvas').getContext('webgl2');
+    if (Graph !== window.Graph3D && gl && !sessionStorage.getItem('jarvis.retry3d')) {
+      sessionStorage.setItem('jarvis.retry3d', '1');
+      setTimeout(() => location.reload(), 1500);
+    } else if (Graph === window.Graph3D) sessionStorage.removeItem('jarvis.retry3d');
+  } catch { /* storage blocked: stay in 2D */ }
+  document.body.classList.toggle('three', Graph === window.Graph3D);
   try {
     [STATUS, GRAPH] = await Promise.all([api('/api/status'), api('/api/graph')]);
   } catch (e) {
@@ -78,7 +90,6 @@ async function boot() {
   Graph.init($('#graph'), GRAPH, { onFocus: openNote, onPath: showPath });
   window.addEventListener('resize', measureInsets);
   bindUI();
-  drawTicks();
   // The model check runs in the background on the server; pick up its verdict.
   setTimeout(refreshStatus, 2500);
   window.addEventListener('focus', refreshStatus);
@@ -102,17 +113,25 @@ async function refreshStatus() {
 // Tell the graph which parts of the screen the panels cover, so it centres in the free space.
 function measureInsets() {
   const vis = el => el && getComputedStyle(el).display !== 'none';
-  const L = $('.left'), R = $('.right'), A = $('.askbar');
+  const L = $('.left'), R = $('.right'), A = $('.askbar'), C = $('#convo');
   const wide = innerWidth > 820;
+  // an open conversation card takes the right of the matrix: the core slides over to project it
+  const convoLeft = wide && innerWidth > 1180 && !C.hidden ? C.getBoundingClientRect().left - 60 : innerWidth;
+  const convoShare = 0.65;                                   // how far the core moves over for it
   Graph.setInsets({
     l: wide && vis(L) ? L.getBoundingClientRect().right : 0,
-    r: vis(R) ? innerWidth - R.getBoundingClientRect().left : 0,
-    t: 0,
+    r: Math.max(vis(R) ? innerWidth - R.getBoundingClientRect().left : 0, (innerWidth - convoLeft) * convoShare),
+    t: $('#telemetry').classList.contains('off') ? 0 : $('#telemetry').getBoundingClientRect().bottom,
     b: innerHeight - A.getBoundingClientRect().top,
   });
 }
 
+const short = m => String(m || '').replace(/^claude-/, '');
 function renderStatus(s) {
+  $('#t-build').textContent = (s.code_version || '—').slice(0, 7);
+  $('#t-model').textContent = s.model.fast_model ? `${short(s.model.model)} / ${short(s.model.fast_model)}` : short(s.model.model);
+  if (outOfCredit(s.voice.stt_error) && SR && !Fallback.stt) Fallback.stt = Date.now();
+  if (outOfCredit(s.voice.tts_error) && 'speechSynthesis' in window && !Fallback.tts) Fallback.tts = Date.now();
   const m = $('#mode');
   m.textContent = s.mode === 'demo' ? 'DEMO DATA' : 'LIVE DATA';
   m.className = 'badge ' + s.mode;
@@ -138,7 +157,8 @@ function renderStatus(s) {
   if (u.over_budget) warnBudgetOnce(u);
   $('#chips').innerHTML =
     chip(model) +
-    chip(!s.voice.key ? ['warn', 'Voice off', 'No ElevenLabs key in .env']
+    chip(fallbackOn('stt') || fallbackOn('tts') ? ['warn', 'Voice · browser', 'ElevenLabs is out of credits or failing: hearing through the browser, speaking with a Windows voice. Tries ElevenLabs again every 30 minutes.']
+      : !s.voice.key ? ['warn', 'Voice off', 'No ElevenLabs key in .env']
       : s.voice.tts_error || s.voice.stt_error ? ['warn', 'Voice', s.voice.tts_error || s.voice.stt_error]
       : ['ok', 'Voice', 'ElevenLabs speech in and out. Press Mic or Space.']) +
     chip(google, 'google-chip') +
@@ -167,9 +187,11 @@ function renderStats() {
 
 function renderHubs() {
   const top = [...GRAPH.nodes].sort((a, b) => b.deg - a.deg).slice(0, 8);
+  const max = Math.max(1, ...top.map(n => n.deg));
   $('#hubs').innerHTML = top.map(n =>
     `<li data-id="${n.id}"><span class="dot" style="background:${Graph.colorFor(n.type)}"></span>
-     <span class="t">${esc(n.title)}</span><span class="n">${n.deg}</span></li>`).join('');
+     <span class="t">${esc(n.title)}</span><span class="n">${n.deg}</span>
+     <span class="w"><i style="width:${Math.round(100 * n.deg / max)}%"></i></span></li>`).join('');
 }
 
 function renderFilters() {
@@ -188,7 +210,7 @@ async function openNote(id) {
   $('.left').classList.toggle('reading', id !== null);
   if (id === null) {
     el.className = 'note empty';
-    el.innerHTML = 'Click a node to open it.<br><span class="hint">Shift-click a second node to trace the path between them.</span>';
+    el.innerHTML = 'Select a memory in the matrix to inspect it.<br><span class="hint">Shift-click a second one to trace the path between them.</span>';
     return;
   }
   let n;
@@ -197,10 +219,18 @@ async function openNote(id) {
   const color = Graph.colorFor(n.type);
   const meta = Object.entries(n.meta).filter(([k]) => k !== 'type');
   el.className = 'note';
+  const vault = STATUS?.vault;
+  const obsidian = vault ? `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(n.rel.replace(/\.md$/i, ''))}` : '';
   el.innerHTML = `
-    <span class="type" style="color:${color}">${esc(n.type)}</span>
+    <div class="node-id">Node <b>${String(n.id).padStart(2, '0')}</b> · <b>${n.links.length}</b> link${n.links.length === 1 ? '' : 's'}
+      <span class="type" style="color:${color};margin-left:auto">${esc(n.type)}</span></div>
     <h2>${esc(n.title)}</h2>
     <div class="meta">${esc(n.rel)}</div>
+    <div class="node-actions">
+      <button class="btn" data-node-act="ask" data-title="${esc(n.title)}">Ask JARVIS</button>
+      ${obsidian ? `<a class="btn" href="${esc(obsidian)}">Open in Obsidian</a>` : ''}
+      <button class="btn" data-node-act="trace">Trace path</button>
+    </div>
     ${meta.length ? `<dl class="kv">${meta.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
     <div class="body">${md(n.text)}</div>
     <div class="label" style="margin-top:14px">Linked · ${n.links.length}</div>
@@ -264,6 +294,9 @@ const TOOL_CAPTIONS = {
   add_prospect: 'Adding the prospect…', weekly_review: 'Reviewing your week…',
 };
 
+const MEMORY_TOOLS = new Set(['search_brain', 'brief_me', 'plan_day', 'find_niches', 'content_board', 'weekly_review',
+                              'list_goals', 'workout_stats', 'edit_note']);
+
 // Streams the answer: text appears as it's written, and with opts.speak each sentence is
 // voiced as soon as it's complete instead of after the whole reply.
 async function ask(text, opts = {}) {
@@ -277,11 +310,13 @@ async function ask(text, opts = {}) {
   const ex = addExchange(text + (files.length ? `  📎 ${files.map(f => f.name).join(', ')}` : ''));
   setReactor('thinking');
   let r = null, shown = '';
+  const t0 = performance.now();
+  let firstAt = 0;
   const ctrl = new AbortController();
   Voice.abortAnswer = () => ctrl.abort();      // barge-in stops waiting for the rest of this answer
   const sayEl = () => {
     const j = ex.querySelector('.jarvis');
-    if (j.classList.contains('pending')) { j.classList.remove('pending'); j.innerHTML = '<p class="say"></p>'; }
+    if (j.classList.contains('pending')) { j.classList.remove('pending'); j.innerHTML = '<p class="say typing"></p>'; firstAt = performance.now(); }
     return j.querySelector('.say');
   };
   try {
@@ -303,14 +338,19 @@ async function ask(text, opts = {}) {
         const ev = JSON.parse(line);
         if (ev.type === 'text') { shown += ev.delta; sayEl().textContent = shown; }
         else if (ev.type === 'sentence') { if (opts.speak) enqueueSpeech(ev.text); }
-        else if (ev.type === 'tool') caption(TOOL_CAPTIONS[ev.name] || 'Working…', 'dim');
+        else if (ev.type === 'tool') {
+          caption(TOOL_CAPTIONS[ev.name] || 'Working…', 'dim');
+          setReactor(MEMORY_TOOLS.has(ev.name) ? 'memory' : 'thinking', TOOL_CAPTIONS[ev.name]?.replace('…', ''));
+        }
         else if (ev.type === 'reset') { shown = ''; speechClear(); }
         else if (ev.type === 'done') r = ev;
       }
     }
     if (!r) throw new Error('the reply was cut off');
+    r._timing = { first: firstAt ? firstAt - t0 : 0, total: performance.now() - t0 };
     if (r.graph_changed) await reloadGraph();
     fillExchange(ex, r);
+    Graph.pulse?.();
     refreshWidgets();
     banner(r.error || '');
   } catch (e) {
@@ -355,11 +395,72 @@ function fillExchange(ex, r) {
   j.classList.remove('pending');
   const tag = r.mode === 'fallback' ? '<span class="modetag">keyword routing · model offline</span>'
     : r.mode === 'error' ? '<span class="modetag">error</span>' : '';
-  j.innerHTML = `<p class="say">${esc(r.reply || '…')}</p>${tag}${(r.cards || []).map(renderCard).join('')}`;
-  if (r.notes && r.notes.length) Graph.highlight([...new Set(r.notes)]);
+  const notes = [...new Set(r.notes || [])];
+  const chips = [];
+  if (r.model) chips.push(['model', short(r.model)]);
+  if (r._timing?.first) chips.push(['first word', `${(r._timing.first / 1000).toFixed(1)}s`]);
+  if (r._timing?.total) chips.push(['total', `${(r._timing.total / 1000).toFixed(1)}s`]);
+  if (r.tools?.length) chips.push(['tools', r.tools.length]);
+  if (notes.length) chips.push(['memories', notes.length]);
+  j.innerHTML = `<p class="say">${esc(r.reply || '…')}</p>${tag}
+    ${chips.length ? `<div class="tele">${chips.map(([k, v]) => `<span>${k}<b>${esc(v)}</b></span>`).join('')}</div>` : ''}
+    ${(r.cards || []).map(renderCard).join('')}`;
+  if (notes.length) {
+    Graph.highlight(notes);
+    const pos = Graph.positions?.(notes);
+    if (pos && pos.nodes.length > 1) {
+      const box = document.createElement('div');
+      box.className = 'popout';
+      box.innerHTML = '<span class="tag">Memory structure · drag to rotate</span><canvas></canvas>';
+      j.insertBefore(box, j.querySelector('.tele')?.nextSibling || null);
+      miniGraph(box.querySelector('canvas'), pos);
+    }
+  }
   // Scroll so the start of this reply is visible, not the bottom of its last card.
   $('#convo-list').scrollTop = ex.offsetTop - $('#convo-list').offsetTop;
   if (r.mode !== 'model') refreshStatus();
+}
+
+// A little 3D view of the memories a reply used, plus their neighbours. Drag to turn it.
+function miniGraph(cv, { nodes, edges }) {
+  const ctx = cv.getContext('2d'), dpr = Math.min(devicePixelRatio || 1, 2);
+  const c = nodes.reduce((a, n) => ({ x: a.x + n.x / nodes.length, y: a.y + n.y / nodes.length, z: a.z + n.z / nodes.length }), { x: 0, y: 0, z: 0 });
+  const pts = nodes.map(n => ({ ...n, x: n.x - c.x, y: n.y - c.y, z: n.z - c.z }));
+  const R = Math.max(1, ...pts.map(p => Math.hypot(p.x, p.y, p.z)));
+  const byId = new Map(pts.map(p => [p.id, p]));
+  let yaw = 0, pitch = 0.3, drag = null, alive = true;
+  cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, yaw, pitch }; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointermove', e => { if (drag) { yaw = drag.yaw + (e.clientX - drag.x) * 0.01; pitch = drag.pitch + (e.clientY - drag.y) * 0.01; } });
+  cv.addEventListener('pointerup', () => { drag = null; });
+  const accent = getComputedStyle(document.body).getPropertyValue('--violet-2').trim() || '#a78bfa';
+  const draw = () => {
+    if (!alive || !cv.isConnected) { alive = false; return; }
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    if (!drag) yaw += 0.006;
+    const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch), k = Math.min(W, H) * 0.38 / R;
+    const proj = p => { const x = p.x * cy - p.z * sy, z0 = p.x * sy + p.z * cy, y = p.y * cp - z0 * sp, z = p.y * sp + z0 * cp;
+                        const f = 1 / (1 + z / (R * 4)); return [W / 2 + x * k * f, H / 2 + y * k * f + 6, f]; };
+    ctx.lineWidth = 1;
+    for (const [a, b] of edges) {
+      const A = proj(byId.get(a)), B = proj(byId.get(b));
+      ctx.strokeStyle = accent; ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.font = '10px "JetBrains Mono", monospace';
+    for (const p of pts.map(p => [p, proj(p)]).sort((a, b) => a[1][2] - b[1][2])) {
+      const [n, [x, y, f]] = p, r = (n.key ? 4 : 2.4) * f;
+      ctx.strokeStyle = n.color; ctx.fillStyle = n.color; ctx.shadowColor = n.color; ctx.shadowBlur = n.key ? 10 : 4;
+      ctx.beginPath(); ctx.moveTo(x, y - r * 1.6); ctx.lineTo(x + r * 1.4, y); ctx.lineTo(x, y + r * 1.6); ctx.lineTo(x - r * 1.4, y); ctx.closePath();
+      n.key ? ctx.fill() : ctx.stroke();
+      ctx.shadowBlur = 0;
+      if (n.key) { ctx.fillStyle = 'rgba(8,10,15,.85)'; const w = ctx.measureText(n.title).width + 8; ctx.fillRect(x + 8, y - 7, w, 14);
+                   ctx.fillStyle = '#fff'; ctx.fillText(n.title, x + 12, y + 3); }
+    }
+    requestAnimationFrame(draw);
+  };
+  draw();
 }
 
 function renderCard(c) {
@@ -532,27 +633,28 @@ async function showMemory() {
 function rotatePlaceholder() {
   let i = 0;
   const q = $('#q');
-  const set = () => { q.placeholder = `Try: "${EXAMPLES[i++ % EXAMPLES.length]}"   ·   press / to type`; };
+  const set = () => { q.placeholder = i++ % 2 === 0 ? 'Ask J.A.R.V.I.S. or say "Hey Jarvis"…' : `Try: "${EXAMPLES[(i >> 1) % EXAMPLES.length]}"`; };
   set();
   setInterval(() => { if (!q.value && document.activeElement !== q) set(); }, EXAMPLE_EVERY);
 }
 
 // ---------------------------------------------------------------- reactor
-function drawTicks() {
-  const g = document.querySelector('.ticks');
-  const NS = 'http://www.w3.org/2000/svg';
-  for (let i = 0; i < 48; i++) {
-    const a = i / 48 * Math.PI * 2, r0 = i % 4 ? 94 : 91, r1 = 98;
-    const l = document.createElementNS(NS, 'line');
-    l.setAttribute('x1', 100 + r0 * Math.cos(a)); l.setAttribute('y1', 100 + r0 * Math.sin(a));
-    l.setAttribute('x2', 100 + r1 * Math.cos(a)); l.setAttribute('y2', 100 + r1 * Math.sin(a));
-    g.appendChild(l);
-  }
+// The core lives in the 3D scene now; this just tells it (and the page) what JARVIS is doing.
+function setReactor(state, detail) {
+  document.body.dataset.state = state;
+  const t = $('#t-state');
+  t.dataset.state = state;
+  t.textContent = { speaking: 'RESPONDING', memory: 'MEMORY' }[state] || state.toUpperCase();
+  Graph?.setState?.(state, detail);
 }
 
-function setReactor(state) {
-  $('#reactor').dataset.state = state;
-  $('#reactor-state').textContent = state === 'standby' ? 'STANDBY' : state.toUpperCase();
+// UK time (what JARVIS thinks in) and UTC, ticking in the telemetry bar.
+function startClocks() {
+  const fmt = tz => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const uk = fmt('Europe/London'), utc = fmt('UTC');
+  const tick = () => { const d = new Date(); $('#t-uk').textContent = uk.format(d); $('#t-utc').textContent = utc.format(d); };
+  tick();
+  setInterval(tick, 1000);
 }
 
 // ---------------------------------------------------------------- one voice across tabs
@@ -680,6 +782,7 @@ async function voiceStart() {
 // End the conversation: back to standby if "hey Jarvis" is armed, otherwise mic off.
 function voiceStop() {
   interrupt();
+  fbListenStop();
   if (Voice.rec && Voice.rec.state !== 'inactive') { Voice.rec.onstop = null; Voice.rec.stop(); }
   Voice.on = false;
   if (Voice.armed && Voice.stream) return standby();
@@ -756,7 +859,8 @@ function drawLevel(l) {
   const t = performance.now() / 180;
   document.querySelectorAll('#bars i').forEach((b, i) =>
     b.style.setProperty('--h', Math.min(1, l * (0.55 + 0.45 * Math.abs(Math.sin(t + i * 1.3))))));
-  $('#reactor').style.setProperty('--level', Math.min(1, l));
+  Graph?.setLevel?.(l);
+  document.querySelector('.orb')?.style.setProperty('--lvl', Math.min(1, l).toFixed(2));
 }
 
 // Runs for every ~46ms block of mic audio: tracks speech onset and the last loud moment.
@@ -825,23 +929,36 @@ function listenAgain(grace = ECHO_GRACE_MS) {
   setVoiceState('listening');
   caption('Listening…');
   startRecorder();
+  if (fallbackOn('stt')) fbListenStart();
 }
 
 async function endTurn() {
   setVoiceState('thinking');                       // deaf from here until JARVIS finishes speaking
   const blob = await stopRecorder();
-  if (!blob) return listenAgain();
-  caption('Transcribing…');
   let text = '';
-  try {
-    const r = await fetch('/api/listen', { method: 'POST', body: blob,
-      headers: { 'Content-Type': blob.type || 'audio/webm', 'X-Jarvis': '1' } });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.status);
-    text = j.text;
-  } catch (e) {
-    banner(`Couldn't transcribe that: ${e.message}`);
-    return listenAgain();
+  if (fallbackOn('stt')) {
+    await fbListenStop();
+    text = (Fallback.text + ' ' + Fallback.interim).trim();
+  } else {
+    if (!blob) return listenAgain();
+    caption('Transcribing…');
+    try {
+      const r = await fetch('/api/listen', { method: 'POST', body: blob,
+        headers: { 'Content-Type': blob.type || 'audio/webm', 'X-Jarvis': '1' } });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.status);
+      text = j.text;
+      Fallback.stt = 0;                                // ElevenLabs works (again)
+    } catch (e) {
+      if (SR && (outOfCredit(e.message) || Fallback.stt)) {
+        useFallback('stt', e.message);
+        Fallback.stt = Date.now();
+        caption('Switched to browser speech recognition. Say that again?', 'dim');
+        return listenAgain();
+      }
+      banner(`Couldn't transcribe that: ${e.message}${SR ? '' : ' (this browser has no speech recognition to fall back on)'}`);
+      return listenAgain();
+    }
   }
   if (!text || !/[a-z0-9]/i.test(text)) { caption("Didn't catch that.", 'dim'); return listenAgain(); }
   caption(`“${text}”`, 'said');
@@ -849,6 +966,88 @@ async function endTurn() {
   await ask(text, { speak: !Voice.muted && Voice.on });   // sentences start playing while the rest streams in
   await speechDone();
   listenAgain();
+}
+
+// ---------------------------------------------------------------- free voice fallback
+// When ElevenLabs is out of credits (or failing), JARVIS keeps talking with what the browser has:
+// the Web Speech API to hear you (Chrome sends that audio to Google, Edge to Microsoft) and a Windows
+// voice to speak. Every RETRY_ELEVEN_MS it tries ElevenLabs again and switches back when it works.
+const RETRY_ELEVEN_MS = 30 * 60 * 1000;
+const Fallback = { stt: 0, tts: 0, rec: null, text: '', interim: '', voice: null };   // stt/tts: when we switched (ms)
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const outOfCredit = msg => /credit|quota|exceeded|limit/i.test(msg || '');
+
+function useFallback(kind, why) {
+  if (Fallback[kind]) return;
+  Fallback[kind] = Date.now();
+  banner(kind === 'stt'
+    ? `ElevenLabs can't transcribe right now (${why}). Switched to your browser's speech recognition.`
+    : `ElevenLabs can't speak right now (${why}). Using a Windows voice until it's back.`);
+  renderStatus(STATUS);
+}
+const fallbackOn = kind => Fallback[kind] && Date.now() - Fallback[kind] < RETRY_ELEVEN_MS;
+
+// ---- hearing: recognition runs while you talk; the transcript is ready when your turn ends
+function fbListenStart() {
+  if (!SR) return;
+  fbListenStop();
+  Fallback.text = ''; Fallback.interim = '';
+  const rec = new SR();
+  rec.lang = 'en-GB'; rec.continuous = true; rec.interimResults = true;
+  rec.onresult = e => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) Fallback.text += t + ' '; else interim += t;
+    }
+    Fallback.interim = interim;
+    if (Voice.state === 'listening') caption(`“${(Fallback.text + interim).trim()}”`, 'live');
+  };
+  rec.onerror = e => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') banner('The browser blocked speech recognition. Allow the microphone for this page.'); };
+  rec.onend = () => { if (Fallback.rec === rec && Voice.state === 'listening') try { rec.start(); } catch {} };   // it stops itself after pauses
+  Fallback.rec = rec;
+  try { rec.start(); } catch { /* already running */ }
+}
+function fbListenStop() {
+  const rec = Fallback.rec;
+  Fallback.rec = null;
+  if (!rec) return Promise.resolve();
+  return new Promise(res => {
+    const t = setTimeout(res, 1200);                 // don't wait forever for the last words
+    rec.onend = () => { clearTimeout(t); res(); };
+    try { rec.stop(); } catch { clearTimeout(t); res(); }
+  });
+}
+
+// ---- speaking: a British voice from Windows / the browser
+function fbVoice() {
+  if (Fallback.voice) return Fallback.voice;
+  const vs = speechSynthesis.getVoices();
+  const pick = [/Ryan.*Natural/i, /Thomas.*Natural/i, /Google UK English Male/i, /George/i, /en-GB/i, /English \(United Kingdom\)/i, /^en/i];
+  for (const re of pick) {
+    const v = vs.find(v => re.test(v.name) || re.test(v.lang));
+    if (v) return (Fallback.voice = v);
+  }
+  return null;
+}
+if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => { Fallback.voice = null; };
+
+function speakLocal(text) {
+  setVoiceState('speaking');
+  caption('');
+  return new Promise(done => {
+    const u = new SpeechSynthesisUtterance(text);
+    const v = fbVoice();
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-GB';
+    u.rate = 1.02; u.pitch = 0.95;
+    let settled = false;
+    const finish = () => { if (settled) return; settled = true; clearInterval(pulse); Voice.stopSpeaking = null; drawLevel(0); done(); };
+    const pulse = setInterval(() => drawLevel(0.25 + Math.random() * 0.35), 90);   // no audio tap here: a gentle stand-in
+    Voice.stopSpeaking = () => { speechSynthesis.cancel(); finish(); };
+    u.onend = finish; u.onerror = finish;
+    speechSynthesis.speak(u);
+    setTimeout(finish, 4000 + text.length * 120);   // watchdog: some voices never fire "end"
+  });
 }
 
 // ---------------------------------------------------------------- speech queue
@@ -903,7 +1102,8 @@ async function playQueue() {
     const blob = await Speech.queue.shift();
     if (gen !== Speech.gen) return;       // a newer reply owns the queue now
     if (Speech.cancelled) break;          // stopped: fall through so whoever's waiting is released
-    if (blob) await playBlob(blob);
+    if (blob?.local) await speakLocal(blob.local);
+    else if (blob) await playBlob(blob);
   }
   if (gen !== Speech.gen) return;
   Speech.playing = false;
@@ -918,14 +1118,21 @@ function speechDone() {
 
 async function fetchSpeech(text, previous) {
   if (Speech.cancelled) return null;
+  if (fallbackOn('tts') && 'speechSynthesis' in window) return { local: text };
   try {
     const r = await fetch('/api/speak', { method: 'POST', body: JSON.stringify({ text, previous_text: previous }),
       headers: { 'Content-Type': 'application/json', 'X-Jarvis': '1' } });
     if (!r.ok) throw new Error((await r.json()).error || r.status);
     const notice = r.headers.get('X-Voice-Notice');
     if (notice) banner(notice);
+    Fallback.tts = 0;
     return await r.blob();
   } catch (e) {
+    if ('speechSynthesis' in window && (outOfCredit(e.message) || Fallback.tts)) {
+      useFallback('tts', e.message);
+      Fallback.tts = Date.now();
+      return { local: text };
+    }
     banner(`Voice output failed: ${e.message}. The reply is on screen.`);
     return null;
   }
@@ -1003,7 +1210,7 @@ function bindUI() {
     $('#convo').hidden = true;
     Graph.highlight(null);
   });
-  $('#hide-convo').addEventListener('click', () => { $('#convo').hidden = true; });
+  $('#hide-convo').addEventListener('click', collapseConvo);
 
   document.addEventListener('click', async e => {
     const act = e.target.closest('[data-action]');
@@ -1030,6 +1237,11 @@ function bindUI() {
       } else if (STATUS?.google.configured) window.open('/oauth/start', '_blank', 'noopener');
       return;
     }
+    const na = e.target.closest('[data-node-act]');
+    if (na) {
+      if (na.dataset.nodeAct === 'ask') return ask(`What's in my note "${na.dataset.title}", and what does it connect to?`);
+      if (na.dataset.nodeAct === 'trace') return caption('Shift-click another memory in the matrix to trace the path to it', 'dim');
+    }
     if (e.target.closest('a')) return;
     const byId = e.target.closest('[data-id]');
     if (byId && !e.target.closest('#graph')) {
@@ -1055,6 +1267,24 @@ function bindUI() {
     hiddenTypes.clear(); Graph.setHidden(hiddenTypes); renderFilters();
   });
   $('#fit').addEventListener('click', () => Graph.fit());
+  $('#fit2').addEventListener('click', () => Graph.fit());
+  $('#zoom-in').addEventListener('click', () => Graph.zoom?.(0.8));
+  $('#zoom-out').addEventListener('click', () => Graph.zoom?.(1.25));
+  $('#lock').addEventListener('click', toggleLock);
+  bindDecks();
+  startClocks();
+  bindParallax();
+  new MutationObserver(() => setTimeout(measureInsets, 30)).observe($('#convo'), { attributes: true, attributeFilter: ['hidden'] });
+  let saved = 'violet';
+  try { saved = localStorage.getItem(THEME_PREF) || 'violet'; } catch {}
+  setTheme(saved, false);
+  $('#theme').addEventListener('click', cycleTheme);
+  renderDiag();
+  setInterval(renderDiag, 2000);
+  $('#q').addEventListener('input', () => Graph.poke?.());           // typing pulses the core
+  $('#filters').addEventListener('mouseover', e => { const li = e.target.closest('li'); Graph.preview?.(li && !li.classList.contains('off') ? li.dataset.type : null); });
+  $('#filters').addEventListener('mouseleave', () => Graph.preview?.(null));
+  document.addEventListener('click', e => { if (e.target.closest('.btn, .dock button, .scene-ctl button, .icon-btn')) uiTick(); });
 
   $('#mic').addEventListener('click', micButton);
   $('#wake').addEventListener('click', () => (Voice.armed ? disarm() : arm()));
@@ -1075,7 +1305,15 @@ function bindUI() {
   document.addEventListener('keydown', e => {
     const typing = document.activeElement === $('#q');
     const onButton = document.activeElement?.tagName === 'BUTTON';
-    if (e.key === '/' && !typing) { e.preventDefault(); $('#q').focus(); }
+    const inField = typing || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+    if ((e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('#q').focus(); }
+    else if (e.key === '/' && !typing) { e.preventDefault(); $('#q').focus(); }
+    else if (!inField && !e.ctrlKey && !e.metaKey && !e.altKey && ['1', '2', '3', '4'].includes(e.key)) toggleArea(+e.key);
+    else if (!inField && (e.key === '+' || e.key === '=')) Graph.zoom?.(0.8);
+    else if (!inField && (e.key === '-' || e.key === '_')) Graph.zoom?.(1.25);
+    else if (!inField && (e.key === 'l' || e.key === 'L')) toggleLock();
+    else if (!inField && (e.key === 't' || e.key === 'T') && !e.ctrlKey && !e.metaKey) cycleTheme();
+    else if (!inField && e.key === 'Tab' && Graph.cycle) { e.preventDefault(); Graph.cycle(e.shiftKey ? -1 : 1); }
     else if (e.key === ' ' && !typing && !onButton) {
       e.preventDefault();
       if (!Voice.on) voiceStart();
@@ -1086,10 +1324,125 @@ function bindUI() {
       if (typing) $('#q').blur();
       if (Voice.on && Voice.state === 'speaking') interrupt();
       else if (Voice.on) voiceStop();
+      collapseConvo();
       Graph.highlight(null); Graph.clear();
     }
-    else if ((e.key === 'f' || e.key === 'F') && !typing) Graph.fit();
+    else if ((e.key === 'f' || e.key === 'F') && !inField) Graph.fit();
   });
+}
+
+// ---------------------------------------------------------------- themes
+const THEMES = ['violet', 'amber', 'cyan'];
+const THEME_PREF = 'jarvis.theme';
+function setTheme(name, remember = true) {
+  if (!THEMES.includes(name)) name = 'violet';
+  document.body.dataset.theme = name === 'violet' ? '' : name;
+  if (name === 'violet') delete document.body.dataset.theme;
+  $('#theme span').textContent = name.toUpperCase();
+  Graph?.setTheme?.(name);
+  if (GRAPH) { renderHubs(); renderFilters(); }             // legend colours follow the theme
+  if (remember) try { localStorage.setItem(THEME_PREF, name); } catch {}
+}
+function cycleTheme() {
+  const cur = document.body.dataset.theme || 'violet';
+  setTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
+}
+
+// The decks lean with the mouse, like looking into a projection.
+function bindParallax() {
+  let raf = 0, mx = 0, my = 0;
+  addEventListener('pointermove', e => {
+    mx = (e.clientX / innerWidth) * 2 - 1; my = (e.clientY / innerHeight) * 2 - 1;
+    if (!raf) raf = requestAnimationFrame(() => {
+      raf = 0;
+      document.documentElement.style.setProperty('--mx', mx.toFixed(3));
+      document.documentElement.style.setProperty('--my', my.toFixed(3));
+    });
+  });
+}
+
+// Radial gauges: scene frame rate, and JARVIS's own process CPU and memory (from the server).
+function renderDiag() {
+  const box = $('#diag');
+  if (!box) return;
+  const proc = STATUS?.proc || {};
+  const fps = Graph?.fps;
+  const g = (label, val, max, text) => {
+    const C = 2 * Math.PI * 26, arc = C * 0.75, v = Math.max(0, Math.min(1, val / max));
+    return `<div class="ring-g"><svg viewBox="0 0 64 64"><circle class="trk" cx="32" cy="32" r="26" stroke-dasharray="${arc} ${C}"/>
+      <circle class="val" cx="32" cy="32" r="26" stroke-dasharray="${arc * v} ${C}"/></svg><b>${text}</b><span>${label}</span></div>`;
+  };
+  box.innerHTML = (fps != null ? g('fps', fps, 60, Math.round(fps)) : g('fps', 0, 60, '—')) +
+    g('cpu', proc.cpu_pct || 0, 100, `${Math.round(proc.cpu_pct || 0)}%`) +
+    g('mem', proc.mem_mb || 0, 512, `${proc.mem_mb || 0}M`);
+  box.title = `Frame rate of the 3D scene · JARVIS process CPU share and memory (${proc.threads || '?'} threads)`;
+}
+
+// Esc: the conversation folds back into the core.
+function collapseConvo() {
+  const c = $('#convo');
+  if (c.hidden) return;
+  c.classList.add('collapsing');
+  setTimeout(() => { c.hidden = true; c.classList.remove('collapsing'); }, 340);
+}
+
+// ---------------------------------------------------------------- decks
+// 1 = left deck, 2 = right deck, 3 = conversation, 4 = telemetry bar. Decks collapse to icon docks;
+// on a narrow window they start docked. Remembered per browser.
+const DECK_PREF = 'jarvis.decks';
+function bindDecks() {
+  let pref = {};
+  try { pref = JSON.parse(localStorage.getItem(DECK_PREF) || '{}'); } catch {}
+  const narrow = innerWidth < 1180;
+  setDocked('left', pref.left ?? narrow, false);
+  setDocked('right', pref.right ?? narrow, false);
+  if (pref.telemetry === false) toggleArea(4, false);
+  document.querySelectorAll('[data-collapse]').forEach(b => b.addEventListener('click', () => setDocked(b.dataset.collapse, true)));
+  document.querySelectorAll('.dock [data-open]').forEach(b => b.addEventListener('click', () => {
+    const panel = b.closest('.panel');
+    setDocked(panel.id, false);
+    const target = { system: '#stats', inspector: '#inspector', hubs: '#hubs-sec', widgets: '.widgets', filters: '.filters' }[b.dataset.open];
+    setTimeout(() => $(target)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 380);
+  }));
+}
+function savePref(k, v) {
+  try { const p = JSON.parse(localStorage.getItem(DECK_PREF) || '{}'); p[k] = v; localStorage.setItem(DECK_PREF, JSON.stringify(p)); } catch {}
+}
+function setDocked(id, docked, remember = true) {
+  $('#' + id).classList.toggle('docked', docked);
+  document.body.classList.toggle(`${id}-docked`, docked);
+  if (remember) savePref(id, docked);
+  setTimeout(measureInsets, 380);                       // after the width transition
+}
+function toggleArea(n, remember = true) {
+  if (n === 1 || n === 2) { const id = n === 1 ? 'left' : 'right'; return setDocked(id, !$('#' + id).classList.contains('docked')); }
+  if (n === 3) { const c = $('#convo'); if (c.hidden && !$('#convo-list').children.length) return caption('No conversation yet', 'dim'); c.hidden = !c.hidden; return; }
+  if (n === 4) {
+    const off = !$('#telemetry').classList.contains('off');
+    $('#telemetry').classList.toggle('off', off);
+    document.body.classList.toggle('no-telemetry', off);
+    if (remember) savePref('telemetry', !off);
+    setTimeout(measureInsets, 380);
+  }
+}
+function toggleLock() {
+  const on = !$('#lock').classList.contains('on');
+  $('#lock').classList.toggle('on', on);
+  $('#lock use').setAttribute('href', on ? '#i-lock' : '#i-unlock');
+  Graph.setLocked?.(on);
+}
+
+// A quiet tick when a control is pressed. Off while JARVIS is muted.
+let tickCtx = null;
+function uiTick() {
+  if (Voice.muted) return;
+  try {
+    tickCtx ??= new AudioContext();
+    const o = tickCtx.createOscillator(), g = tickCtx.createGain(), t = tickCtx.currentTime;
+    o.type = 'sine'; o.frequency.setValueAtTime(1650, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.05);
+    g.gain.setValueAtTime(0.018, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+    o.connect(g).connect(tickCtx.destination); o.start(t); o.stop(t + 0.07);
+  } catch { /* no audio: silent */ }
 }
 
 // ---------------------------------------------------------------- widgets
@@ -1101,7 +1454,8 @@ const WIDGET_DEFS = {
   goals:    { title: 'Today', render: wGoals },
   training: { title: 'Training', render: wTraining },
   next:     { title: 'Next up', render: wNext },
-  spend:    { title: 'Spend today', render: wSpend },
+  spend:    { title: 'Cost & API', render: wSpend },
+  activity: { title: 'Activity', render: wActivity },
 };
 const Widgets = { data: null, editing: false, pref: { order: Object.keys(WIDGET_DEFS), hidden: [] } };
 try { Object.assign(Widgets.pref, JSON.parse(localStorage.getItem(WIDGET_PREF) || '{}')); } catch {}
@@ -1133,9 +1487,21 @@ function wNext(d) {
 }
 function wSpend(d) {
   const s = d.spend || {}, pct = s.budget ? Math.min(100, Math.round(100 * s.usd / s.budget)) : 0;
-  const split = Object.entries(s.models || {}).map(([m, v]) => `${esc(m.replace('claude-', ''))} $${v.toFixed(2)}`).join(' · ');
-  return { badge: `of $${(s.budget || 0).toFixed(0)}`,
-    html: `<div class="big">$${(s.usd || 0).toFixed(2)}</div>${split ? `<div class="sub">${split}</div>` : ''}<div class="meter"><i style="width:${pct}%"></i></div>` };
+  const models = Object.entries(s.models || {}).sort((a, b) => b[1] - a[1]);
+  const top = Math.max(0.01, ...models.map(([, v]) => v));
+  const gauges = models.map(([m, v]) => `<span>${esc(short(m))}</span><span>$${v.toFixed(2)}</span>
+    <div class="meter"><i style="width:${Math.round(100 * v / top)}%"></i></div>`).join('');
+  return { badge: `${pct}% of $${(s.budget || 0).toFixed(0)}`,
+    html: `<div class="big">$${(s.usd || 0).toFixed(2)} <span class="sub">today</span></div>
+      <div class="meter"><i style="width:${pct}%"></i></div>${gauges ? `<div class="gauge">${gauges}</div>` : ''}` };
+}
+function wActivity(d) {
+  const a = d.activity || [];
+  if (!a.length) return { html: '<div class="sub">Nothing yet. Notes JARVIS saves and pipeline moves show up here.</div>' };
+  const now = Date.now() / 1000;
+  const ago = t => { const m = Math.round((now - t) / 60); return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
+  return { badge: `${a.length}`, html: `<ol class="stream">${a.slice(0, 6).map(x =>
+    `<li class="${now - x.at < 3600 ? 'fresh' : ''}" ${x.note != null ? `data-id="${x.note}"` : ''}><time>${ago(x.at)}</time>${esc(x.text)}</li>`).join('')}</ol>` };
 }
 
 function renderWidgets() {
@@ -1213,4 +1579,5 @@ function bindWidgets() {
   window.addEventListener('focus', refreshWidgets);
 }
 
-boot();
+// graph3d.js is a module (it loads after this script): wait for it, but never more than 4s.
+Promise.race([window.graphReady || Promise.resolve(), new Promise(r => setTimeout(r, 4000))]).then(boot);

@@ -108,16 +108,22 @@ A starter vault lives at `C:\Users\abara\Documents\JARVIS Vault`. Open **Start h
 
 | | |
 |---|---|
-| **Type** | `/` focuses the ask bar. Enter sends |
+| **Type** | `/` or `Ctrl+K` focuses the command console. Enter (or **Execute**) sends |
+| **Keys** | `1` left deck · `2` right deck · `3` conversation · `4` telemetry bar · `Tab` / `Shift+Tab` step through the relevant memories · `T` theme · `+` / `-` zoom · `L` lock the view (no drift or parallax) · `F` fit · `Esc` folds the conversation back into the core and clears the selection. Decks you collapse stay collapsed; on a narrow window they start as icon docks |
+| **Themes** | **Violet** (JARVIS's own, the default), **Amber** (Stark workshop) and **Cyan** (the lab). The button in the telemetry bar or `T`. Remembered in this browser |
+| **Conversation** | Each reply is projected out of the core as an angled glass card, typed out as it streams. Under it: the model that answered, time to first word, total time, tools used and memories linked (all measured, nothing estimated), and a small 3D view of those memories you can drag to turn |
+| **Diagnostics** | Frame rate of the 3D scene, and JARVIS's own CPU share and memory, as arc gauges in the left deck |
+| **Inspector** | Select a memory to see its node number, links and type, with **Ask JARVIS**, **Open in Obsidian** and **Trace path** |
 | **Hey Jarvis** | Click once to arm. JARVIS listens on standby for "Hey Jarvis", chimes, then takes your question. Back to standby after 20 s of quiet or Esc. Remembered between visits |
 | **Mic / Space** | Start talking without the wake word. Your turn ends after 0.9 s of silence |
 | **Space / Esc / "Hey Jarvis" while it talks** | Interrupt. The mic ignores JARVIS's own voice; only a clear "Hey Jarvis" (stricter threshold, `BARGE_IN_THRESHOLD` in `ui/app.js`) cuts in, and whatever you say next is your new question |
 | **$ today** (chip, top-left) | Estimated spend today; click for today and this month (Claude tokens and searches, ElevenLabs credits). Turns red past `JARVIS_DAILY_BUDGET` (default $2) |
 | **Mute** | JARVIS keeps listening but stops speaking |
+| **When ElevenLabs runs out** | JARVIS switches by itself: your browser's speech recognition hears you (Chrome sends that audio to Google, Edge to Microsoft) and a Windows voice speaks (Ryan in Edge, Google UK English Male in Chrome). The voice chip says **Voice · browser**. Every 30 minutes it tries ElevenLabs again and switches back once there are credits |
 | **Brief / Plan / Market / Week / Memory** | Calendar + unread + what slipped + today's red folders · five things ranked by money · pre-session news and markets · your week in review · what it remembers about you |
 | **📎 / paste / drop** | Show JARVIS a screenshot, photo or PDF (up to 5 per question). It's read once and not kept: the conversation keeps JARVIS's reply, not the file. Text inside files can't make JARVIS save or change anything. On Telegram, just send the photo or PDF |
 | **Evening check-in** | After 7pm, the first time you open JARVIS it asks one question. Your answer is saved in your words to `JARVIS/Journal`. "Not tonight" skips it. `/checkin` on Telegram. Change the hour with `JARVIS_CHECKIN_HOUR` (or `off`) |
-| **Graph** | Drag to pan, scroll to zoom, drag a node to move it (double-click to release). Click opens a note. Shift-click a second node traces the shortest path. `F` fits |
+| **The core and your memory** | A 3D scene: the JARVIS core in the middle, every note floating around it, links arcing between them. Drag to orbit, scroll to zoom, hover a memory to pull it forward (its links and its beam to the core light up), click to open it, shift-click a second one to trace the path. `F` fits. The core shows what JARVIS is doing: calm when idle, a waveform when listening, particles pouring in when thinking, beams to the relevant notes when searching memory, an outward pulse when it answers. The label under the core says it in words |
 
 Voice tuning lives in named constants at the top of `ui/app.js`:
 - `SILENCE_MS`: raise it if JARVIS cuts you off mid-thought.
@@ -199,13 +205,16 @@ agent/
   clock.py     UK / New York time without a timezone database
   prompt.md    who JARVIS is and the rules
   selftest.py  guardrail checks
-ui/            index.html, app.js, graph.js, wake.js, styles.css, vendor/ (wake-word runtime + models)
+ui/            index.html, app.js, graph3d.js (3D scene, Three.js), graph.js (2D fallback), wake.js, styles.css,
+               vendor/ (wake-word runtime + models, three.js)
 data/          generate_demo.py → demo_vault/, demo_inbox.json, demo_calendar.json
 memory/        one markdown file per remembered fact. Delete a file to make JARVIS forget it
 CLAUDE.md      who Ali is, loaded every session
 ```
 
 ## Troubleshooting
+
+- **The 3D scene doesn't appear (you get the flat 2D graph instead).** The page falls back to 2D if WebGL is unavailable or the 3D files fail to load. On this PC Norton Safe Web briefly blocked the new three.js files the first time they were served, then allowed them once scanned. Reload after a minute. If it keeps happening, add `127.0.0.1` to Norton's Safe Web / web protection exclusions.
 
 | Symptom | Fix |
 |---|---|

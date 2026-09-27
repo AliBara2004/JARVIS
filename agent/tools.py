@@ -593,6 +593,26 @@ def _next_event():
     return value
 
 
+def activity(limit=8):
+    """What JARVIS has done lately, newest first: notes it saved, stages it moved, the last backup."""
+    items = []
+    for n in V().notes:
+        if n.meta.get("source") != "jarvis" or not n.meta.get("created"):
+            continue
+        try:
+            at = dt.datetime.strptime(n.meta["created"][:16], "%Y-%m-%d %H:%M").timestamp()
+        except ValueError:
+            continue
+        verb = {"workout": "Logged", "prospect": "Added lead"}.get(n.type, "Saved")
+        items.append({"at": at, "text": f"{verb} {n.title}", "kind": n.type, "note": n.id})
+    week_ago = time.time() - 7 * 86400
+    titles = {n.rel: n.title for n in V().notes}
+    for rel, e in status.events_since(week_ago):
+        items.append({"at": e["at"], "text": f"{titles.get(rel, rel.rsplit('/', 1)[-1][:-3])} → {e['stage']}", "kind": "stage"})
+    items.sort(key=lambda x: -x["at"])
+    return items[:limit]
+
+
 def widgets():
     """Everything the widgets show, in one small read. No model calls, nothing paid."""
     try:
@@ -601,7 +621,7 @@ def widgets():
         items = [{"text": f"(can't read today's note: {e})", "done": False}]
     u = usage.summary()
     return {"date": clock.uk_today().isoformat(), "goals": items,
-            "training": fitness.summary(), "next": _next_event(),
+            "training": fitness.summary(), "next": _next_event(), "activity": activity(),
             "spend": {"usd": round(u["today"]["usd"], 2), "budget": u["budget_usd"],
                       "models": {m: round(v["usd"], 2) for m, v in u["today"].get("models", {}).items()}}}
 
