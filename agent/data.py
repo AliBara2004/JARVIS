@@ -151,14 +151,17 @@ def inbox(limit=10):
                 for m in _demo("demo_inbox.json")][:limit]
     import google
     ids = google.request("GET", f"{GMAIL}/messages", {"q": "in:inbox is:unread", "maxResults": limit})
-    out = []
-    for m in ids.get("messages", []):
+
+    def one(m):
         msg = google.request("GET", f"{GMAIL}/messages/{m['id']}",
                              {"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]})
         h = {x["name"].lower(): x["value"] for x in msg.get("payload", {}).get("headers", [])}
-        out.append({"id": m["id"], "from": h.get("from", ""), "subject": h.get("subject", "(no subject)"),
-                    "date": h.get("date", ""), "snippet": _html.unescape(msg.get("snippet", ""))})
-    return out
+        return {"id": m["id"], "from": h.get("from", ""), "subject": h.get("subject", "(no subject)"),
+                "date": h.get("date", ""), "snippet": _html.unescape(msg.get("snippet", ""))}
+    # the messages are fetched side by side, not one after another (10 in about the time of 1)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        return list(pool.map(one, ids.get("messages", [])))
 
 
 def calendar(start, days=1):

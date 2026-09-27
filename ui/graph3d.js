@@ -90,7 +90,7 @@ const Graph3D = (() => {
 
   const cam = { theta: 0.6, phi: 1.2, dist: 90, target: new THREE.Vector3(), goal: null };
   const view = { theta: 0.6, phi: 1.2, dist: 90, target: new THREE.Vector3() };
-  let lastTouch = -1e9, mouse = { x: 0, y: 0, sx: 0, sy: 0 }, drag = null, locked = false;
+  let lastTouch = -1e9, lastMove = -1e9, mouse = { x: 0, y: 0, sx: 0, sy: 0 }, drag = null, locked = false;
 
   // scene parts
   let core, coreBill, fresnelCore, icosa, gyro = [], outer, arcs, wave, pulse, emblem, coreGlow, particles, dataShell;
@@ -703,7 +703,15 @@ const Graph3D = (() => {
 
   // ---- frame --------------------------------------------------------------------
   const V = new THREE.Vector3(), camDir = new THREE.Vector3(), white = new THREE.Color(1, 1, 1);
+  // Idle and untouched: draw every other frame (30 fps) so the GPU is free for everything else on the PC.
+  // Any movement, hover, speech or thinking puts it straight back to full rate.
+  let skip = 0, isQuiet = false;
+  const IDLE_AFTER_MS = 8000;
   function frame() {
+    const quiet = (state === 'idle' || state === 'standby') && !hover && !drag && !cam.goal && pulseT < 0
+      && performance.now() - lastTouch > IDLE_AFTER_MS && performance.now() - lastMove > IDLE_AFTER_MS;
+    isQuiet = quiet;
+    if (quiet && (++skip & 1)) return;
     const nowT = performance.now(), dt = Math.min((nowT - lastT) / 1000, 0.05);
     lastT = nowT;
     time += dt;
@@ -1065,6 +1073,7 @@ const Graph3D = (() => {
       lastTouch = performance.now();
     });
     cv.addEventListener('pointermove', e => {
+      lastMove = performance.now();
       mouse.x = (e.clientX / innerWidth) * 2 - 1; mouse.y = (e.clientY / innerHeight) * 2 - 1;
       if (drag) {
         const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
@@ -1157,6 +1166,7 @@ const Graph3D = (() => {
     poke: () => { poke = Math.min(1.5, poke + 0.6); },
     preview: type => { preview = type ? new Set(nodes.filter(n => n.type === type).map(n => n.id)) : null; },
     get fps() { return fps; },
+    get quiet() { return isQuiet; },          // true while drawing at the idle rate
     // Tab: the next memory worth looking at (relevant ones first, then the biggest hubs)
     cycle: (dir = 1) => {
       const pool = (found && found.size ? [...found].map(i => nodes[i]) : byDeg.slice(0, 12)).filter(n => !hidden.has(n.type));

@@ -30,6 +30,8 @@ BACKOFF = 15 * 60            # after a 429, leave the host alone this long
 
 _cache = {}
 _backoff_until = {}
+_failed = {}                 # url -> when it last failed (e.g. next week's calendar isn't published until later)
+FAIL_TTL = 15 * 60
 
 
 class MarketError(Exception):
@@ -52,6 +54,10 @@ def _get(url, ttl):
     if hit and now - hit[0] < ttl:
         return hit[1]
     host = urllib.parse.urlparse(url).netloc
+    if now - _failed.get(url, 0) < FAIL_TTL:  # failed just now: don't ask again on every call
+        if hit:
+            return hit[1]
+        raise MarketError(f"{host} had nothing for this a few minutes ago")
     if now < _backoff_until.get(host, 0):
         if hit:
             return hit[1]
@@ -61,12 +67,14 @@ def _get(url, ttl):
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
     except urllib.error.HTTPError as e:
+        _failed[url] = now
         if e.code == 429:
             _backoff_until[host] = now + BACKOFF
         if hit:
             return hit[1]                     # stale beats nothing
         raise MarketError(f"{host} unavailable: {e.code} {e.reason}")
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        _failed[url] = now
         if hit:
             return hit[1]
         raise MarketError(f"{host} unavailable: {getattr(e, 'reason', e)}")
