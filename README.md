@@ -23,7 +23,9 @@ Or double-click the **JARVIS** desktop shortcut (`Start JARVIS.cmd` → `agent/l
    | Setting | What it's for | Where to get it |
    |---|---|---|
    | `ANTHROPIC_API_KEY` | The brain: conversation, tools, judgement | console.anthropic.com → API Keys. Add credit and set a monthly limit under Plans & Billing |
-   | `JARVIS_MODEL` | Which Claude model | Default `claude-opus-5` |
+   | `JARVIS_MODEL` | Which Claude model for hard turns | Default `claude-opus-5` |
+   | `JARVIS_FAST_MODEL` | Which model for everyday chat | Default `claude-sonnet-5` |
+   | `JARVIS_ROUTING` | `auto` routes by the rules in `brain.route`; `off` uses `JARVIS_MODEL` for everything | Default `auto` |
    | `ELEVENLABS_API_KEY` | Voice out (speech) and in (Scribe transcription) | elevenlabs.io → Profile → API Keys. Text-to-speech + speech-to-text permissions are enough |
    | `ELEVENLABS_VOICE_ID` | The voice JARVIS speaks in | elevenlabs.io → Voices → My Voices → ⋯ → Copy voice ID (20 characters). If it's wrong, JARVIS uses the built-in "George" voice and says so |
    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Read Gmail, save drafts you tap, add confirmed events to Calendar | Google Cloud Console: new project → enable Gmail API + Google Calendar API → OAuth consent screen (External, add yourself as test user) → Credentials → OAuth client ID → **Desktop app** |

@@ -31,6 +31,34 @@ ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|do
                            r"|add|mark|move|set|filmed|posted|replied|edit|change|update|fix|replace|remove|tidy|rewrite|undo)\b", re.I)
 
 
+# Turns that go to the strong model (llm.MODEL); everything else goes to llm.FAST_MODEL.
+# Rules, not a classifier call: a classifier would add a round trip before JARVIS can speak.
+HARD = re.compile(r"\b(research|look (it |this |that )?up|google|draft|script|hooks?|rewrite|edit|write (me )?(an? )?"
+                  r"(email|reply|message|post|caption|note)|weekly review|review (the|my|this) week|plan (my|the|out)"
+                  r"|prospects?|niches?|clients?|offer|pricing|strategy|analy[sz]e|compare|explain|why|should i"
+                  r"|pros and cons|trade-?offs?|think (hard|properly|carefully|it through)|use opus|properly)\b", re.I)
+LONG_WORDS = 40                  # a long message is usually a real problem, not chat
+STICKY_TURNS = 1                 # after a hard turn, the next turn stays strong ("make it shorter", "and the other one?")
+EASY = re.compile(r"^\s*(use (sonnet|the (cheap|fast) (one|model))|quick( one)?[:,])", re.I)
+_route = {"strong_left": 0}
+
+
+def route(text, attached=False):
+    """Pick the model for this turn. Same model for every tool round in the turn, so the cache holds."""
+    if llm.ROUTING == "off" or llm.FAST_MODEL == llm.MODEL:
+        return llm.MODEL
+    if EASY.search(text):
+        _route["strong_left"] = 0
+        return llm.FAST_MODEL
+    if attached or HARD.search(text) or len(text.split()) > LONG_WORDS:
+        _route["strong_left"] = STICKY_TURNS
+        return llm.MODEL
+    if _route["strong_left"] > 0:
+        _route["strong_left"] -= 1
+        return llm.MODEL
+    return llm.FAST_MODEL
+
+
 def system_blocks():
     prompt = (data.ROOT / "agent" / "prompt.md").read_text(encoding="utf-8")
     who = data.ROOT / "CLAUDE.md"
@@ -77,6 +105,7 @@ def _said(reply, phrase):
 def reset():
     with _lock:
         _history.clear()
+        _route["strong_left"] = 0
 
 
 def ask(text, emit=None, readonly=False, attachments=None):
@@ -197,6 +226,7 @@ def _model_turn(text, emit, readonly=False, attachments=None):
     else:
         user = {"role": "user", "content": f"{stamp}\n{text}"}
     msgs = [m for turn in _history for m in turn] + [user]
+    model = route(text, attached=bool(files))
     # An attachment is untrusted like an email: writes then need Ali's own words asking for them.
     turn, cards, notes, used, written = [user], [], [], ["attachment"] if files else [], []
     changed = False
@@ -213,7 +243,7 @@ def _model_turn(text, emit, readonly=False, attachments=None):
 
     for _ in range(MAX_TOOL_ROUNDS):
         sep["pending"] = bool(spoken)
-        resp = llm.stream(system_blocks(), msgs, tools.SPECS, on_text=on_text)
+        resp = llm.stream(system_blocks(), msgs, tools.SPECS, on_text=on_text, model=model)
         speech.flush()
         if resp.get("stop_reason") == "refusal":
             emit({"type": "reset"})
@@ -292,7 +322,7 @@ def _model_turn(text, emit, readonly=False, attachments=None):
     _history.append(turn)
     del _history[:-HISTORY_TURNS]
     return {"reply": reply, "cards": cards, "notes": notes, "mode": "model", "tools": [u for u in used if u != "attachment"],
-            "pending": tools.pending_list(), "graph_changed": changed}
+            "pending": tools.pending_list(), "graph_changed": changed, "model": model}
 
 
 # ------------------------------------------------------------------ fallback (no model)

@@ -285,7 +285,7 @@ def main():
     backup.start()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     SERVER["srv"] = srv
-    print(f"JARVIS · {data.mode()} mode · {len(vault.get().notes)} notes · {len(vault.get().edges)} links · model {llm.MODEL}")
+    print(f"JARVIS · {data.mode()} mode · {len(vault.get().notes)} notes · {len(vault.get().edges)} links · model {llm.MODEL}" + (f" (chat on {llm.FAST_MODEL})" if llm.ROUTING != "off" else ""))
     print(f"open {ORIGIN}   (Ctrl+C to stop)")
     if "--no-browser" not in sys.argv:
         # An already-open JARVIS tab reconnects (and reloads) by itself; only open one if none did.

@@ -12,11 +12,14 @@ import data  # noqa: F401 — loads .env before the constants below are read
 import usage
 
 API = "https://api.anthropic.com/v1"
-MODEL = os.environ.get("JARVIS_MODEL", "claude-opus-5")
+MODEL = os.environ.get("JARVIS_MODEL", "claude-opus-5")            # hard turns, research, attachments
+FAST_MODEL = os.environ.get("JARVIS_FAST_MODEL", "claude-sonnet-5")  # everyday chat (brain.route picks)
+ROUTING = os.environ.get("JARVIS_ROUTING", "auto").lower()           # "off" = every turn on MODEL
 EFFORT = os.environ.get("JARVIS_EFFORT", "low")      # chat is fast at low; research uses medium
 FALLBACK_BETA = "server-side-fallback-2026-07-01"    # re-runs a declined request on Anthropic's recommended model
 
-_state = {"status": "unchecked", "detail": "", "fallbacks": True, "error_at": 0.0}
+_state = {"status": "unchecked", "detail": "", "error_at": 0.0}
+_no_fallbacks = set()     # models this account can't use the fallback beta on
 RETRY_AFTER = 60          # seconds before trying the model again after a hard failure
 
 
@@ -35,15 +38,16 @@ def _fail(detail):
 
 
 def status():
+    info = {"model": MODEL, "fast_model": FAST_MODEL if ROUTING != "off" else None}
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {"state": "missing", "detail": "No ANTHROPIC_API_KEY in .env", "model": MODEL}
-    return {"state": _state["status"], "detail": _state["detail"], "model": MODEL}
+        return {"state": "missing", "detail": "No ANTHROPIC_API_KEY in .env", **info}
+    return {"state": _state["status"], "detail": _state["detail"], **info}
 
 
-def _headers(beta=True):
+def _headers(fallbacks=False):
     h = {"x-api-key": os.environ.get("ANTHROPIC_API_KEY", ""), "anthropic-version": "2023-06-01",
          "content-type": "application/json"}
-    if beta and _state["fallbacks"]:
+    if fallbacks:
         h["anthropic-beta"] = FALLBACK_BETA
     return h
 
@@ -53,19 +57,36 @@ def check():
     if not os.environ.get("ANTHROPIC_API_KEY"):
         _state.update(status="missing", detail="No key")
         return
-    req = urllib.request.Request(f"{API}/models/{MODEL}", headers=_headers(beta=False))
-    try:
-        with urllib.request.urlopen(req, timeout=15):
-            _state.update(status="ready", detail="")
-    except urllib.error.HTTPError as e:
-        _fail(f"{e.code}: {_msg(e)}")
-    except urllib.error.URLError as e:
-        _fail(f"unreachable: {e.reason}")
+    for model in dict.fromkeys([MODEL] + ([FAST_MODEL] if ROUTING != "off" else [])):
+        req = urllib.request.Request(f"{API}/models/{model}", headers=_headers())
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                _state.update(status="ready", detail="")
+        except urllib.error.HTTPError as e:
+            return _fail(f"{model}: {e.code}: {_msg(e)}")
+        except urllib.error.URLError as e:
+            return _fail(f"unreachable: {e.reason}")
 
 
-def _body(system, messages, tools, max_tokens, effort):
+def _cached(messages):
+    """Mark the end of the conversation so the next turn reads it from cache (0.1x) instead of paying
+    full input price for the whole history again. Copies the last message: history itself is never
+    touched, so old marks don't pile up past the API's limit of 4."""
+    if not messages:
+        return messages
+    last = dict(messages[-1])
+    content = last["content"]
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    content = list(content)
+    content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+    last["content"] = content
+    return messages[:-1] + [last]
+
+
+def _body(system, messages, tools, max_tokens, effort, model):
     body = {
-        "model": MODEL, "max_tokens": max_tokens, "system": system, "messages": messages,
+        "model": model or MODEL, "max_tokens": max_tokens, "system": system, "messages": _cached(messages),
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": effort or EFFORT},
     }
@@ -74,24 +95,25 @@ def _body(system, messages, tools, max_tokens, effort):
     return body
 
 
-def call(system, messages, tools=None, max_tokens=4000, effort=None):
-    with _open(_body(system, messages, tools, max_tokens, effort)) as r:
+def call(system, messages, tools=None, max_tokens=4000, effort=None, model=None):
+    body = _body(system, messages, tools, max_tokens, effort, model)
+    with _open(body) as r:
         resp = json.loads(r.read())
-    usage.record_llm(MODEL, resp.get("usage"))
+    usage.record_llm(body["model"], resp.get("usage"))
     return resp
 
 
-def stream(system, messages, tools=None, max_tokens=4000, effort=None, on_text=None):
+def stream(system, messages, tools=None, max_tokens=4000, effort=None, on_text=None, model=None):
     """Same result as call(), but text reaches on_text(delta) as it's generated.
     Rebuilds every content block (thinking + signature, text, tool_use) exactly, so the
     message can go back into the conversation unchanged."""
-    body = _body(system, messages, tools, max_tokens, effort)
+    body = _body(system, messages, tools, max_tokens, effort, model)
     body["stream"] = True
     try:
         resp = _read_stream(_open(body), on_text)
     except (TimeoutError, ConnectionError, OSError) as e:
         raise LLMError(f"connection dropped mid-reply: {e}")
-    usage.record_llm(MODEL, resp["usage"])
+    usage.record_llm(body["model"], resp["usage"])
     return resp
 
 
@@ -142,20 +164,21 @@ def _read_stream(resp, on_text):
 def _open(body):
     """POST /v1/messages with retries; returns the open response (caller reads or streams it)."""
     for attempt in range(3):
-        if _state["fallbacks"]:
+        fallbacks = body["model"] not in _no_fallbacks
+        if fallbacks:
             body["fallbacks"] = "default"
         else:
             body.pop("fallbacks", None)
         req = urllib.request.Request(f"{API}/messages", data=json.dumps(body).encode(),
-                                     headers=_headers(), method="POST")
+                                     headers=_headers(fallbacks), method="POST")
         try:
             r = urllib.request.urlopen(req, timeout=120)
             _state.update(status="ready", detail="")
             return r
         except urllib.error.HTTPError as e:
             msg = _msg(e)
-            if e.code == 400 and "fallback" in msg.lower() and _state["fallbacks"]:
-                _state["fallbacks"] = False          # account can't use the beta; carry on without it
+            if e.code == 400 and "fallback" in msg.lower() and fallbacks:
+                _no_fallbacks.add(body["model"])     # beta not available for this model; carry on without it
                 continue
             if e.code in (429, 500, 502, 503, 529) and attempt < 2:
                 time.sleep(1.5 * (attempt + 1))

@@ -40,12 +40,16 @@ def _save(db):
     os.replace(tmp, FILE)
 
 
-def _add(**amounts):
+def _add(model=None, **amounts):
     with _lock:
         db = _load()
         day = db["days"].setdefault(clock.uk_today().isoformat(), {k: 0 for k in _FIELDS})
         for k, v in amounts.items():
             day[k] = round(day.get(k, 0) + v, 6)
+        if model:                      # which model the money went to: shows what routing saves
+            m = day.setdefault("models", {}).setdefault(model, {"calls": 0, "usd": 0})
+            m["calls"] += amounts.get("calls", 0)
+            m["usd"] = round(m["usd"] + amounts.get("usd", 0), 6)
         _save(db)
 
 
@@ -58,7 +62,7 @@ def record_llm(model, u):
     cr, cw = u.get("cache_read_input_tokens") or 0, u.get("cache_creation_input_tokens") or 0
     searches = (u.get("server_tool_use") or {}).get("web_search_requests") or 0
     usd = (inp * pin + out * pout + cr * pin * CACHE_READ + cw * pin * CACHE_WRITE) / 1e6 + searches * WEB_SEARCH_USD
-    _add(usd=usd, calls=1, input=inp, output=out, cache_read=cr, cache_write=cw, searches=searches)
+    _add(model=model, usd=usd, calls=1, input=inp, output=out, cache_read=cr, cache_write=cw, searches=searches)
 
 
 def record_tts(chars, model):
@@ -75,6 +79,7 @@ def summary():
     month = today[:7]
     blank = {k: 0 for k in _FIELDS}
     t = {**blank, **db["days"].get(today, {})}
+    t.setdefault("models", {})
     m = dict(blank)
     for d, row in db["days"].items():
         if d.startswith(month):

@@ -19,6 +19,7 @@ except Exception:
 
 import brain  # noqa: E402
 import data  # noqa: E402
+import llm  # noqa: E402
 import memory  # noqa: E402
 import status  # noqa: E402
 import tools  # noqa: E402
@@ -85,7 +86,7 @@ check("Gmail permissions: read + drafts only (no gmail.send, no gmail.modify)",
       "gmail.readonly" in allsrc and "gmail.send" not in allsrc and "gmail.modify" not in allsrc)
 _bk = code_only(ROOT / "agent" / "backup.py")
 check("Backups only add history (no force-push, reset, rebase, clean or branch deletes)",
-      not re.search(r"--force|-f|reset|rebase|clean|push.*--delete|push.*:\S*\s*$|filter-branch", _bk)
+      not re.search(r"--force|-f\b|reset|rebase|clean|push.*--delete|push.*:\S*\s*$|filter-branch", _bk)
       and '"push", "-q", "origin", "HEAD:main"' in _bk)
 check("Backup adds no files among the notes (ignore rules go in .git/info/exclude)",
       '"info" / "exclude"' in _bk and ".gitignore" not in _bk)
@@ -242,6 +243,24 @@ print("\nTalking without a model")
 for text, bad in [("hello jarvis", "Best match"), ("why?", "Best match"), ("can you hear me", "Nothing in your notes")]:
     reply = brain.fallback(text)["reply"]
     check(f"{text!r} gets conversation, not a search", bad not in reply, reply)
+
+print("\nModel routing")
+if llm.ROUTING != "off" and llm.FAST_MODEL != llm.MODEL:
+    brain.reset()
+    check("Small talk goes to the cheap model", brain.route("morning, how's it going") == llm.FAST_MODEL)
+    check("Research goes to the strong model", brain.route("research the best CRM for dentists") == llm.MODEL)
+    check("The turn after a hard one stays strong", brain.route("make it shorter") == llm.MODEL
+          and brain.route("cheers") == llm.FAST_MODEL)
+    check("Attachments go to the strong model", brain.route("what's this?", attached=True) == llm.MODEL)
+    brain.reset()
+else:
+    print("  SKIP  routing is off")
+hist = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+        {"role": "user", "content": "and?"}]
+marked = llm._cached(hist)
+check("History cache mark goes on the last message only, without touching history",
+      bool(marked[-1]["content"][-1].get("cache_control")) and hist[-1]["content"] == "and?"
+      and "cache_control" not in str(marked[:-1]))
 
 print("\nSecrets on disk")
 for f in (".env", ".secrets/google_token.json"):
