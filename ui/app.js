@@ -1055,7 +1055,7 @@ function showVoicePicker() {
   j.innerHTML = `<p class="say">The voice I use when ElevenLabs is out of credits.</p>
     <div class="card"><div class="ctitle">Voices in this browser</div>${rows || '<div class="rsub">No English voices found.</div>'}
     <div class="cfoot">${edge ? "Natural voices are Microsoft's online neural voices: the reply text goes to Microsoft to be spoken."
-      : 'This browser has no natural voices. Open JARVIS in Microsoft Edge for Ryan, Thomas, Sonia and others (the desktop shortcut does this now).'}</div></div>`;
+      : 'This browser has no natural voices. Microsoft Edge has natural voices (Ryan, Thomas, Sonia and others).'}</div></div>`;
 }
 function tryVoice(name) {
   const v = speechSynthesis.getVoices().find(x => x.name === name);

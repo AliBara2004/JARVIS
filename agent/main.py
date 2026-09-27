@@ -127,14 +127,14 @@ def status():
         "alerts": reminders.alerts(),                   # reminders that fired and the page hasn't shown yet
     }
 
-# Open the page in Microsoft Edge when it's installed: Edge has the natural neural voices (Ryan, Thomas,
-# Sonia) that the free voice fallback uses. JARVIS_BROWSER=default uses the system browser instead.
+# Open the page in the system browser. JARVIS_BROWSER=edge opens Microsoft Edge instead (it has the natural
+# neural voices Ryan, Thomas, Sonia for the free voice fallback).
 EDGE_PATHS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
               r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
 
 
 def open_page(url):
-    if os.environ.get("JARVIS_BROWSER", "edge").lower() == "edge" and os.name == "nt":
+    if os.environ.get("JARVIS_BROWSER", "default").lower() == "edge" and os.name == "nt":
         edge = next((p for p in EDGE_PATHS if os.path.exists(p)), None)
         if edge:
             subprocess.Popen([edge, url], close_fds=True)
@@ -142,8 +142,29 @@ def open_page(url):
     webbrowser.open(url)
 
 
+
+def ui_version():
+    """Changes whenever a page file changes (name, size, time), so each version gets fresh URLs."""
+    h = hashlib.sha256()
+    for f in sorted(UI.glob("*")):
+        if f.suffix in (".js", ".css"):
+            st = f.stat()
+            h.update(f"{f.name}:{st.st_size}:{st.st_mtime_ns}".encode())
+    return h.hexdigest()[:10]
+
+
+def versioned(html):
+    """index.html with ?v=<version> on our own scripts and stylesheet. Browsers always load the current
+    code, and nothing between browser and server (a security scanner, a stale cache) can stay stuck on
+    one fixed address."""
+    v = ui_version().encode()
+    for name in (b"styles.css", b"wake.js", b"graph3d.js", b"graph.js", b"app.js"):
+        html = html.replace(b'"' + name + b'"', b'"' + name + b"?v=" + v + b'"')
+    return html
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = 128         # the page opens ~20 connections at once; Python's default backlog of 5 dropped some
 
     def handle_error(self, request, client_address):
         """A tab that reloads or closes mid-reply hangs up on us. That's normal, not an error worth a traceback."""
@@ -253,7 +274,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, 404)
         # Vendored runtime/models are large and never change: let the browser cache them.
         cache = {"Cache-Control": "public, max-age=604800"} if "vendor" in p.relative_to(UI).parts else None
-        self._send(200, p.read_bytes(), TYPES.get(p.suffix.lower(), "application/octet-stream"), cache)
+        body = p.read_bytes()
+        if rel == "index.html":
+            body = versioned(body)
+        self._send(200, body, TYPES.get(p.suffix.lower(), "application/octet-stream"), cache)
 
     # ------------------------------------------------------------ POST
     def do_POST(self):

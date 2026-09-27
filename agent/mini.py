@@ -42,9 +42,9 @@ EDGE_PATHS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
 
 
 def open_jarvis():
-    """Same rule as main.open_page: Edge if installed (its natural voices), unless JARVIS_BROWSER=default."""
+    """Same rule as main.open_page: the system browser, or Edge if JARVIS_BROWSER=edge."""
     edge = next((p for p in EDGE_PATHS if os.path.exists(p)), None)
-    if edge and os.environ.get("JARVIS_BROWSER", "edge").lower() == "edge":
+    if edge and os.environ.get("JARVIS_BROWSER", "default").lower() == "edge":
         subprocess.Popen([edge, ORIGIN], close_fds=True)
     else:
         webbrowser.open(ORIGIN)
