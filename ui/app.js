@@ -16,7 +16,7 @@ const CONVO_KEEP = 8;            // exchanges kept on screen
 const STATUS_EVERY_MS = 15000;   // how often to pick up model/voice status and vault changes
 
 // ---- voice tuning -----------------------------------------------------------
-const SILENCE_MS = 900;          // quiet this long after you've spoken ends your turn
+const SILENCE_MS = 800;          // quiet this long after you've spoken ends your turn
 const SPEECH_LEVEL = 0.03;       // mic RMS (0-1) that counts as speech; raise it in a noisy room
 const MIN_SPEECH_MS = 250;       // sounds shorter than this are blips, not speech
 const MAX_TURN_MS = 120000;      // one turn can run two minutes: long thoughts are fine

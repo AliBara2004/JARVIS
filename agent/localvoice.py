@@ -32,9 +32,11 @@ PIPER_DIR = LOCAL / "piper"
 WHISPER_DIR = LOCAL / "whisper"
 VOICE = os.environ.get("JARVIS_PIPER_VOICE", "en_GB-alan-medium")
 WHISPER_MODEL = os.environ.get("JARVIS_WHISPER_MODEL", "ggml-base.en-q5_1.bin")
+WHISPER_PORT = 7779                # whisper-server on localhost only, keeping the model loaded between turns
+THREADS = str(os.cpu_count() or 4)
 KOKORO_DIR = LOCAL / "kokoro"
 KOKORO_VOICE = os.environ.get("JARVIS_KOKORO_VOICE", "bm_lewis")     # Ali's pick; bm_george, bm_daniel also British
-KOKORO_SPEED = float(os.environ.get("JARVIS_KOKORO_SPEED", "1.05"))
+KOKORO_SPEED = float(os.environ.get("JARVIS_KOKORO_SPEED", "1.12"))
 KOKORO_FILES = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 KOKORO_PACKAGE = "kokoro-onnx==0.6.1"
 
@@ -133,7 +135,11 @@ _kokoro = _Helper()
 
 
 def warm():
-    """Load Kokoro in the background at start-up, so the first sentence is quick."""
+    """Load Kokoro and whisper in the background at start-up, so the first turn is quick."""
+    try:
+        _whisper.ensure()
+    except Exception:
+        pass
     if kokoro_python():
         try:
             _kokoro.say("Ready.")
@@ -170,8 +176,74 @@ def tts(text):
 
 
 # ------------------------------------------------------------------ listening (whisper.cpp)
+class _Whisper:
+    """whisper-server kept running (model loaded), so a turn costs only the transcription."""
+    def __init__(self):
+        self.proc, self.lock = None, threading.Lock()
+
+    def _up(self):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{WHISPER_PORT}/", timeout=1):
+                return True
+        except Exception:
+            return False
+
+    def _exe(self):
+        exe = whisper_exe()
+        server = exe.parent / "whisper-server.exe" if exe else None
+        return server if server and server.exists() else None
+
+    def ensure(self):
+        with self.lock:
+            if self._up():                 # already running (possibly started by an earlier JARVIS): reuse it
+                return True
+            server, model = self._exe(), whisper_model()
+            if not (server and model):
+                return False
+            self.proc = subprocess.Popen([str(server), "-m", str(model), "--host", "127.0.0.1", "--port", str(WHISPER_PORT),
+                                          "-t", THREADS, "-l", "en", "-nt"], cwd=str(server.parent),
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            for _ in range(40):            # up to 8 s for the model to load
+                if self._up():
+                    return True
+                if self.proc.poll() is not None:
+                    return False
+                threading.Event().wait(0.2)
+            return False
+
+    def transcribe(self, wav_bytes):
+        boundary = "----jarvis" + os.urandom(8).hex()
+        body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"turn.wav\"\r\n"
+                f"Content-Type: audio/wav\r\n\r\n").encode() + wav_bytes + \
+               (f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n"
+                f"--{boundary}--\r\n").encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{WHISPER_PORT}/inference", data=body, method="POST",
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read().decode("utf-8", errors="ignore")
+
+
+_whisper = _Whisper()
+
+
+def _clean(text):
+    text = " ".join(text.split())
+    return "" if text in ("[BLANK_AUDIO]", "(silence)") else text.replace("[BLANK_AUDIO]", "").strip()
+
+
 def stt(wav_bytes):
-    """Text from a 16 kHz mono WAV. The audio goes to a temp file only for whisper to read, then it's deleted."""
+    """Text from a 16 kHz mono WAV: the loaded whisper-server if it's up, else a one-shot whisper run."""
+    try:
+        if _whisper.ensure():
+            return _clean(_whisper.transcribe(wav_bytes))
+    except Exception:
+        pass                               # fall through to the one-shot CLI
+    return _stt_cli(wav_bytes)
+
+
+def _stt_cli(wav_bytes):
+    """The audio goes to a temp file only for whisper to read, then it's deleted."""
     exe, model = whisper_exe(), whisper_model()
     if not (exe and model):
         raise RuntimeError("Local transcription isn't installed. Run: python agent/localvoice.py setup")
@@ -179,8 +251,7 @@ def stt(wav_bytes):
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(wav_bytes)
-        threads = str(max(1, min(4, (os.cpu_count() or 2) - 1)))
-        r = subprocess.run([str(exe), "-m", str(model), "-f", path, "-l", "en", "-nt", "-np", "-t", threads],
+        r = subprocess.run([str(exe), "-m", str(model), "-f", path, "-l", "en", "-nt", "-np", "-t", THREADS],
                            capture_output=True, timeout=120, cwd=str(exe.parent),
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     finally:
@@ -190,8 +261,7 @@ def stt(wav_bytes):
             pass
     if r.returncode != 0:
         raise RuntimeError(f"whisper failed: {r.stderr.decode(errors='ignore')[-300:]}")
-    text = " ".join(r.stdout.decode("utf-8", errors="ignore").split())
-    return "" if text in ("[BLANK_AUDIO]", "(silence)") else text.replace("[BLANK_AUDIO]", "").strip()
+    return _clean(r.stdout.decode("utf-8", errors="ignore"))
 
 
 # ------------------------------------------------------------------ setup

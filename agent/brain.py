@@ -151,6 +151,8 @@ def _answer(text, emit, readonly=False, attachments=None, spoken=False):
 SPEAK_FIRST_MIN = 12    # the first chunk goes out as soon as it's a sentence: that's what cuts the wait
 SPEAK_NEXT_MIN = 60     # later chunks group short sentences, which sounds smoother than one-by-one
 _BOUNDARY = re.compile(r"[.!?…][\"')\]]?\s|\n\s*\n")
+_CLAUSE = re.compile(r"[,;:—–][\"')\]]?\s")
+FIRST_CLAUSE_MIN = 40   # a long first sentence starts speaking at its first comma past this many characters
 
 
 class Sentences:
@@ -165,6 +167,9 @@ class Sentences:
             need = SPEAK_FIRST_MIN if self.first else SPEAK_NEXT_MIN
             cut = next((m.end() for m in _BOUNDARY.finditer(self.buf) if len(self.buf[:m.end()].strip()) >= need),
                        None)
+            if cut is None and self.first:     # still waiting on sentence one: its first clause can go ahead
+                cut = next((m.end() for m in _CLAUSE.finditer(self.buf) if len(self.buf[:m.end()].strip()) >= FIRST_CLAUSE_MIN),
+                           None)
             if cut is None:
                 return
             self._send(self.buf[:cut])
