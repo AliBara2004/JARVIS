@@ -231,14 +231,47 @@ def _pipeline():
 
 
 # ------------------------------------------------------------------ brief_me
-def brief_me():
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+
+def _parse_day(day):
+    """'' / 'today', 'tomorrow', a weekday ('friday' = the next one), or YYYY-MM-DD → a UK date."""
     today = clock.uk_today()
-    cards, facts, notes = [], {}, []
+    d = str(day or "").strip().lower()
+    if d in ("", "today", "tonight"):
+        return today
+    if d == "tomorrow":
+        return today + dt.timedelta(days=1)
+    for i, name in enumerate(WEEKDAYS):
+        if d.startswith(name[:3]):
+            return today + dt.timedelta(days=(i - today.weekday()) % 7 or 7)
+    try:
+        return dt.date.fromisoformat(d[:10])
+    except ValueError:
+        return today
+
+
+def _when(d):
+    """'today', 'tomorrow' or 'on Friday', for sentences."""
+    lab = _day_label(d)
+    return lab.lower() if lab in ("Today", "Tomorrow") else f"on {lab}"
+
+
+def _day_label(d):
+    today = clock.uk_today()
+    return "Today" if d == today else "Tomorrow" if d == today + dt.timedelta(days=1) else d.strftime("%A")
+
+
+def brief_me(day=""):
+    today = _parse_day(day)
+    now = clock.uk_today()
+    label = _day_label(today)
+    cards, facts, notes = [], {"day": today.isoformat()}, []
 
     try:
         events = data.calendar(today, 1)
         facts["calendar_today"] = events
-        cards.append(card("calendar", f"Today · {today.strftime('%a %d %b')}",
+        cards.append(card("calendar", f"{label} · {today.strftime('%a %d %b')}",
                           [{"text": e["title"], "meta": "all day" if e["all_day"] else e["start"][11:16]} for e in events]
                           or [{"text": "Nothing booked."}]))
     except Exception as e:
@@ -246,13 +279,25 @@ def brief_me():
         facts["calendar_error"] = str(e)
         cards.append(_google_down("calendar", e)["cards"][0])
 
-    try:
-        msgs = data.inbox(10)
-        facts["unread"] = len(msgs)
-        facts["unread_from"] = [_parse_from(m["from"])[0] or m["from"] for m in msgs[:5]]
-    except Exception as e:
-        msgs = None
-        facts["inbox_error"] = str(e)
+    msgs = None
+    if today == now:                               # unread is about now, not a future day
+        try:
+            msgs = data.inbox(10)
+            facts["unread"] = len(msgs)
+            facts["unread_from"] = [_parse_from(m["from"])[0] or m["from"] for m in msgs[:5]]
+        except Exception as e:
+            facts["inbox_error"] = str(e)
+
+    due_that_day = [t for t in _tasks() if t["due"] == today]
+    if due_that_day:
+        facts["tasks_due"] = [{"task": t["text"], "file": t["note"].rel} for t in due_that_day]
+        cards.append(card("plan", f"Due {label.lower() if label != today.strftime('%A') else 'on ' + label}",
+                          [{"text": t["text"], "sub": t["note"].rel, "note": t["note"].id} for t in due_that_day]))
+        notes += [t["note"].id for t in due_that_day]
+    booked = [i for i in reminders.upcoming(50) if i["due"].startswith(today.isoformat())]
+    if booked:
+        facts["reminders"] = [{"text": i["text"], "when": reminders.describe(i)} for i in booked]
+        cards.append(_reminders_card(booked, f"Reminders · {label.lower() if label != today.strftime('%A') else label}"))
 
     overdue = sorted([t for t in _tasks() if t["due"] and t["due"] < today], key=lambda t: t["due"])
     proposals = [n for n in _pipeline() if _stage(n) == "proposal sent"]
@@ -268,9 +313,9 @@ def brief_me():
         facts["ny_open_uk"] = clock.ny_open_uk(today).strftime("%H:%M")
         try:
             reds = [e for e in _key_events(market.calendar(today)) if e["impact"] == "High"]
-            facts["red_folders_today"] = [f"{e['time']} {e['currency']} {e['title']}" for e in reds]
+            facts["red_folders"] = [f"{e['time']} {e['currency']} {e['title']}" for e in reds]
             if reds:
-                cards.append(card("calendar", f"Red folders · {len(reds)} today",
+                cards.append(card("calendar", f"Red folders · {len(reds)} {label.lower() if label != today.strftime('%A') else 'on ' + label}",
                                   [{"text": f"{e['currency']} · {e['title']}", "meta": e["time"]} for e in reds],
                                   foot="Forex Factory, UK time. Ask for the pre-session brief for the full picture."))
         except market.MarketError as e:
@@ -281,9 +326,12 @@ def brief_me():
         bits.append(f"{len(events)} on the calendar" if events else "a clear calendar")
     if msgs is not None:
         bits.append(f"{len(msgs)} unread")
+    if due_that_day:
+        bits.append(f"{len(due_that_day)} due")
     bits.append(f"{len(overdue)} overdue" if overdue else "nothing overdue")
     summary = ", ".join(bits)
-    say = f"{clock.part_of_day().capitalize()}. {summary[:1].upper()}{summary[1:]}."
+    say = (f"{clock.part_of_day().capitalize()}. {summary[:1].upper()}{summary[1:]}." if today == now
+           else f"{label}: {summary}.")
     if "ny_open_uk" in facts:
         say += f" New York opens at {facts['ny_open_uk']}."
     return result(say, cards, facts, notes)
@@ -293,8 +341,8 @@ def brief_me():
 STAGE_WEIGHT = {"proposal sent": 100, "call booked": 85, "contacted": 45, "lead": 30}
 
 
-def plan_day():
-    today = clock.uk_today()
+def plan_day(day=""):
+    today = _parse_day(day)
     items = []
 
     try:
@@ -335,8 +383,8 @@ def plan_day():
     rows = [{"text": it["text"], "sub": it["why"], "meta": it.get("meta"), "note": it.get("note"),
              "tag": "fixed" if it.get("fixed") else f"#{i + 1}"} for i, it in enumerate(plan)]
     say = (f"Five things, money first. Lead with {plan[0]['text']}." if len(plan) == 5
-           else f"{len(plan)} things today. Lead with {plan[0]['text']}." if plan else "Nothing pressing today.")
-    return result(say, [card("plan", "Today's plan · ordered by what moves money", rows,
+           else f"{len(plan)} thing{'s' if len(plan) != 1 else ''} {_when(today)}. Lead with {plan[0]['text']}." if plan else f"Nothing pressing {_when(today)}.")
+    return result(say, [card("plan", f"{_day_label(today)}'s plan · ordered by what moves money", rows,
                              foot="Ranking: proposals > booked calls > trading session > overdue tasks > follow-ups. "
                                   "Pipeline stages come from the status: field in prospect notes.")],
                   {"plan": [{k: v for k, v in it.items() if k not in ("w", "note")} for it in plan]},
@@ -1317,11 +1365,12 @@ SPECS = [
                     "exists in his files.",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "brief_me",
-     "description": "Today's briefing: calendar, unread count, and what slipped (overdue tasks, proposals awaiting reply).",
-     "input_schema": {"type": "object", "properties": {}}},
+     "description": "Briefing for a day (today unless he names another): calendar, tasks due, reminders, what slipped "
+                    "(overdue tasks, proposals awaiting reply), red folders and the NY open; unread count for today only.",
+     "input_schema": {"type": "object", "properties": {"day": {"type": "string", "description": "today (default), tomorrow, a weekday like friday, or YYYY-MM-DD"}}}},
     {"name": "plan_day",
-     "description": "Build today's plan: at most five items, ordered by what moves money.",
-     "input_schema": {"type": "object", "properties": {}}},
+     "description": "Build the plan for a day (today unless he names another): at most five items, ordered by what moves money.",
+     "input_schema": {"type": "object", "properties": {"day": {"type": "string", "description": "today (default), tomorrow, a weekday like friday, or YYYY-MM-DD"}}}},
     {"name": "find_niches",
      "description": "Rank the niches Ali has scored in his notes, with warm prospects per niche. For new niche "
                     "ideas beyond his notes, use research_web.",
