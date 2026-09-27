@@ -8,6 +8,8 @@ import http.client
 import json
 import threading
 import tkinter as tk
+import os
+import subprocess
 import webbrowser
 
 PORT = 7777
@@ -35,6 +37,19 @@ def request(method, path, body=None):
     return data
 
 
+EDGE_PATHS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+              r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
+
+
+def open_jarvis():
+    """Same rule as main.open_page: Edge if installed (its natural voices), unless JARVIS_BROWSER=default."""
+    edge = next((p for p in EDGE_PATHS if os.path.exists(p)), None)
+    if edge and os.environ.get("JARVIS_BROWSER", "edge").lower() == "edge":
+        subprocess.Popen([edge, ORIGIN], close_fds=True)
+    else:
+        webbrowser.open(ORIGIN)
+
+
 class Mini:
     def __init__(self):
         self.root = tk.Tk()
@@ -59,7 +74,7 @@ class Mini:
         close.bind("<Button-1>", lambda e: self.root.destroy())
         opener = tk.Label(head, text="open", fg=FAINT, bg=BG, font=MONO, cursor="hand2")
         opener.pack(side="right", padx=8)
-        opener.bind("<Button-1>", lambda e: webbrowser.open(ORIGIN))
+        opener.bind("<Button-1>", lambda e: open_jarvis())
         for w in (head, title):
             w.bind("<ButtonPress-1>", self._start_move)
             w.bind("<B1-Motion>", self._move)
@@ -76,7 +91,7 @@ class Mini:
 
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="Refresh", command=self.refresh)
-        menu.add_command(label="Open JARVIS", command=lambda: webbrowser.open(ORIGIN))
+        menu.add_command(label="Open JARVIS", command=open_jarvis)
         menu.add_separator()
         menu.add_command(label="Close", command=self.root.destroy)
         self.root.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))

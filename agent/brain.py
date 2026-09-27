@@ -29,14 +29,15 @@ CANCEL = re.compile(r"^\s*(no|nope|cancel|don'?t|stop|scrap that)\b[\s.!]*$", re
 # Ali asking, in his own words, for something to be kept. Needed for a write after untrusted text was read.
 ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this)"
                            r"|add|mark|move|set|filmed|posted|replied|edit|change|update|fix|replace|remove|tidy|rewrite|undo"
-                           r"|goals?|tick|cross|done|finished|did|today|trained|workout|gym|ran|lifted)\b", re.I)
+                           r"|goals?|tick|cross|done|finished|did|today|trained|workout|gym|ran|lifted"
+                           r"|remind|reminder|nudge|ping|alert|cancel)\b", re.I)
 
 
 # Turns that go to the strong model (llm.MODEL); everything else goes to llm.FAST_MODEL.
 # Rules, not a classifier call: a classifier would add a round trip before JARVIS can speak.
 HARD = re.compile(r"\b(research|look (it |this |that )?up|google|draft|script|hooks?|rewrite|edit|write (me )?(an? )?"
                   r"(email|reply|message|post|caption|note)|weekly review|review (the|my|this) week|plan (my|the|out)"
-                  r"|prospects?|niches?|clients?|offer|pricing|strategy|analy[sz]e|compare|explain|why|should i"
+                  r"|prospects?|niches?|clients?|outreach|chase|follow ?up|leads?|offer|pricing|strategy|analy[sz]e|compare|explain|why|should i"
                   r"|pros and cons|trade-?offs?|think (hard|properly|carefully|it through)|use opus|properly)\b", re.I)
 LONG_WORDS = 40                  # a long message is usually a real problem, not chat
 STICKY_TURNS = 1                 # after a hard turn, the next turn stays strong ("make it shorter", "and the other one?")
@@ -286,6 +287,8 @@ def _model_turn(text, emit, readonly=False, attachments=None):
                 for k in ("ticked", "unticked"):
                     if r["data"].get(k):
                         written.append((k, r["data"][k]))
+                if r["data"].get("reminder_set"):
+                    written.append(("reminder", r["data"]["reminder_set"]))
                 if r["data"].get("goals_added"):
                     written.extend(("goal", g) for g in r["data"]["goals_added"])
             changed = changed or bool(isinstance(r["data"], dict) and r["data"].get("graph_changed"))
@@ -311,6 +314,8 @@ def _model_turn(text, emit, readonly=False, attachments=None):
             extra.append(f"I've noted: {what}")
         if kind == "stage" and not _said(reply, what):
             extra.append(f"Marked {what}.")
+        if kind == "reminder" and not _said(reply, what.split(" (")[0]):
+            extra.append(f"Reminder set: {what}.")
         if kind in ("ticked", "unticked", "goal") and not _said(reply, what):
             extra.append({"ticked": "Ticked: ", "unticked": "Unticked: ", "goal": "Added to today's goals: "}[kind] + what + ".")
         if kind == "note":

@@ -98,7 +98,7 @@ async function boot() {
 
 let loadedVersion = null;
 async function refreshStatus() {
-  try { STATUS = await api('/api/status'); renderStatus(STATUS); }
+  try { STATUS = await api('/api/status'); renderStatus(STATUS); showAlerts(STATUS.alerts); }
   catch { setTimeout(refreshStatus, 2000); return; }       // server restarting: check back soon
   loadedVersion ??= STATUS.code_version;
   if (STATUS.code_version !== loadedVersion && !busy && Voice.state !== 'speaking') {
@@ -157,10 +157,10 @@ function renderStatus(s) {
   if (u.over_budget) warnBudgetOnce(u);
   $('#chips').innerHTML =
     chip(model) +
-    chip(fallbackOn('stt') || fallbackOn('tts') ? ['warn', 'Voice · browser', 'ElevenLabs is out of credits or failing: hearing through the browser, speaking with a Windows voice. Tries ElevenLabs again every 30 minutes.']
+    chip(fallbackOn('stt') || fallbackOn('tts') ? ['warn action', 'Voice · browser', 'ElevenLabs is out of credits or failing: hearing through the browser, speaking with a browser voice. Tries ElevenLabs again every 30 minutes. Click to choose the voice.']
       : !s.voice.key ? ['warn', 'Voice off', 'No ElevenLabs key in .env']
       : s.voice.tts_error || s.voice.stt_error ? ['warn', 'Voice', s.voice.tts_error || s.voice.stt_error]
-      : ['ok', 'Voice', 'ElevenLabs speech in and out. Press Mic or Space.']) +
+      : ['ok', 'Voice', 'ElevenLabs speech in and out. Press Mic or Space. Click to choose the fallback voice.'], 'voice-chip') +
     chip(google, 'google-chip') +
     (s.telegram.enabled ? chip(s.telegram.error ? ['warn', 'Telegram', s.telegram.error]
                                : s.telegram.paired ? ['ok', 'Telegram', `Paired with ${s.telegram.name || 'your phone'}. Click to manage.`]
@@ -1020,9 +1020,14 @@ function fbListenStop() {
 }
 
 // ---- speaking: a British voice from Windows / the browser
+const VOICE_PREF = 'jarvis.voice';
 function fbVoice() {
   if (Fallback.voice) return Fallback.voice;
   const vs = speechSynthesis.getVoices();
+  let saved = null;
+  try { saved = localStorage.getItem(VOICE_PREF); } catch {}
+  const chosen = saved && vs.find(v => v.name === saved);
+  if (chosen) return (Fallback.voice = chosen);
   const pick = [/Ryan.*Natural/i, /Thomas.*Natural/i, /Google UK English Male/i, /George/i, /en-GB/i, /English \(United Kingdom\)/i, /^en/i];
   for (const re of pick) {
     const v = vs.find(v => re.test(v.name) || re.test(v.lang));
@@ -1031,6 +1036,42 @@ function fbVoice() {
   return null;
 }
 if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => { Fallback.voice = null; };
+
+// Click the Voice chip: every English voice this browser has, natural (neural) ones first.
+function showVoicePicker() {
+  const vs = ('speechSynthesis' in window ? speechSynthesis.getVoices() : []).filter(v => /^en/i.test(v.lang));
+  const natural = v => /natural|neural/i.test(v.name);
+  vs.sort((a, b) => natural(b) - natural(a) || (/GB/i.test(b.lang) - /GB/i.test(a.lang)) || a.name.localeCompare(b.name));
+  const cur = fbVoice()?.name;
+  const edge = /Edg\//.test(navigator.userAgent);
+  const ex = addExchange('Fallback voice', true);
+  const j = ex.querySelector('.jarvis');
+  j.classList.remove('pending');
+  const rows = vs.slice(0, 14).map(v => `<div class="row">
+      <span class="rtag ${natural(v) ? 'done' : ''}">${natural(v) ? 'natural' : 'basic'}</span>
+      <div class="rmain"><div class="rtext">${esc(v.name.replace(/^Microsoft |Online |\(Natural\) /g, ''))}</div><div class="rsub">${esc(v.lang)}${v.name === cur ? ' · in use' : ''}</div></div>
+      <button class="btn" data-voice-try="${esc(v.name)}">Try</button>
+      <button class="btn ${v.name === cur ? 'primary' : ''}" data-voice-use="${esc(v.name)}">${v.name === cur ? 'In use' : 'Use'}</button></div>`).join('');
+  j.innerHTML = `<p class="say">The voice I use when ElevenLabs is out of credits.</p>
+    <div class="card"><div class="ctitle">Voices in this browser</div>${rows || '<div class="rsub">No English voices found.</div>'}
+    <div class="cfoot">${edge ? "Natural voices are Microsoft's online neural voices: the reply text goes to Microsoft to be spoken."
+      : 'This browser has no natural voices. Open JARVIS in Microsoft Edge for Ryan, Thomas, Sonia and others (the desktop shortcut does this now).'}</div></div>`;
+}
+function tryVoice(name) {
+  const v = speechSynthesis.getVoices().find(x => x.name === name);
+  if (!v) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance("Good evening, Ali. This is how I'll sound when ElevenLabs is out.");
+  u.voice = v; u.lang = v.lang; u.rate = 1.02; u.pitch = 0.95;
+  speechSynthesis.speak(u);
+}
+function useVoice(name, btn) {
+  try { localStorage.setItem(VOICE_PREF, name); } catch {}
+  Fallback.voice = null;
+  const card = btn.closest('.card');
+  card.querySelectorAll('[data-voice-use]').forEach(b => { const on = b.dataset.voiceUse === name; b.textContent = on ? 'In use' : 'Use'; b.classList.toggle('primary', on); });
+  caption(`Fallback voice: ${name.replace(/^Microsoft |Online |\(Natural\) /g, '')}`, 'dim');
+}
 
 function speakLocal(text) {
   setVoiceState('speaking');
@@ -1230,6 +1271,10 @@ function bindUI() {
       }
     }
     if (e.target.closest('#spend-chip')) return showSpend();
+    const vt = e.target.closest('[data-voice-try]'), vu = e.target.closest('[data-voice-use]');
+    if (vt) return tryVoice(vt.dataset.voiceTry);
+    if (vu) return useVoice(vu.dataset.voiceUse, vu);
+    if (e.target.closest('#voice-chip')) return showVoicePicker();
     if (e.target.closest('#telegram-chip')) return showTelegram();
     if (e.target.closest('#google-chip')) {
       if (STATUS?.google.connected) {
@@ -1329,6 +1374,38 @@ function bindUI() {
     }
     else if ((e.key === 'f' || e.key === 'F') && !inField) Graph.fit();
   });
+}
+
+// ---------------------------------------------------------------- reminders
+// The server fires them (and pushes to Telegram); the page shows each once, chimes, and speaks it if
+// voice is on. Then tells the server it's been seen.
+const shownAlerts = new Set();
+function reminderChime() {
+  try {
+    tickCtx ??= new AudioContext();
+    const c = tickCtx, t = c.currentTime;
+    [880, 1320, 880].forEach((f, i) => {
+      const o = c.createOscillator(), g = c.createGain(), t0 = t + i * 0.14;
+      o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.07, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.2);
+      o.connect(g).connect(c.destination); o.start(t0); o.stop(t0 + 0.22);
+    });
+  } catch { /* no audio */ }
+}
+function showAlerts(list) {
+  const fresh = (list || []).filter(a => !shownAlerts.has(a.id));
+  if (!fresh.length) return;
+  fresh.forEach(a => shownAlerts.add(a.id));
+  if (!Voice.muted) reminderChime();
+  const ex = addExchange('⏰ Reminder', true);
+  fillExchange(ex, { reply: fresh.map(a => a.text).join(' · '), mode: 'direct', cards: [] });
+  caption('⏰ ' + fresh[0].text, 'live');
+  if (Voice.on && !busy && Voice.state !== 'speaking' && !Voice.muted) {
+    speechReset();
+    fresh.forEach(a => enqueueSpeech('Reminder. ' + a.text));
+  }
+  post('/api/reminders/seen', { ids: fresh.map(a => a.id) }).catch(() => {});
+  refreshWidgets();
 }
 
 // ---------------------------------------------------------------- themes
@@ -1456,6 +1533,7 @@ const WIDGET_DEFS = {
   next:     { title: 'Next up', render: wNext },
   spend:    { title: 'Cost & API', render: wSpend },
   activity: { title: 'Activity', render: wActivity },
+  reminders: { title: 'Reminders', render: wReminders },
 };
 const Widgets = { data: null, editing: false, pref: { order: Object.keys(WIDGET_DEFS), hidden: [] } };
 try { Object.assign(Widgets.pref, JSON.parse(localStorage.getItem(WIDGET_PREF) || '{}')); } catch {}
@@ -1494,6 +1572,11 @@ function wSpend(d) {
   return { badge: `${pct}% of $${(s.budget || 0).toFixed(0)}`,
     html: `<div class="big">$${(s.usd || 0).toFixed(2)} <span class="sub">today</span></div>
       <div class="meter"><i style="width:${pct}%"></i></div>${gauges ? `<div class="gauge">${gauges}</div>` : ''}` };
+}
+function wReminders(d) {
+  const r = d.reminders || [];
+  if (!r.length) return { html: '<div class="sub">Nothing scheduled. Say "remind me at 3 to…" or "nudge me if I haven&#39;t trained by 6".</div>' };
+  return { badge: `${r.length}`, html: `<ol class="stream">${r.map(x => `<li><time>${esc(x.when)}</time>${esc(x.text)}</li>`).join('')}</ol>` };
 }
 function wActivity(d) {
   const a = d.activity || [];

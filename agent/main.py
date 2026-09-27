@@ -10,6 +10,7 @@ import hashlib
 import html
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -27,6 +28,7 @@ import google
 import telegram
 import llm
 import memory
+import reminders
 import tools
 import usage
 import vault
@@ -122,7 +124,22 @@ def status():
         "pending": tools.pending_list(),
         "vault": data.vault_root().name if data.vault_root() else "",     # for obsidian:// links
         "proc": proc_stats(),
+        "alerts": reminders.alerts(),                   # reminders that fired and the page hasn't shown yet
     }
+
+# Open the page in Microsoft Edge when it's installed: Edge has the natural neural voices (Ryan, Thomas,
+# Sonia) that the free voice fallback uses. JARVIS_BROWSER=default uses the system browser instead.
+EDGE_PATHS = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+              r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
+
+
+def open_page(url):
+    if os.environ.get("JARVIS_BROWSER", "edge").lower() == "edge" and os.name == "nt":
+        edge = next((p for p in EDGE_PATHS if os.path.exists(p)), None)
+        if edge:
+            subprocess.Popen([edge, url], close_fds=True)
+            return
+    webbrowser.open(url)
 
 
 class Server(ThreadingHTTPServer):
@@ -287,6 +304,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._stream_ask(str(body.get("text", ""))[:4000], ids)
         if path == "/api/confirm":
             return self._json(brain.confirm(str(body.get("id", "")), bool(body.get("ok"))))
+        if path == "/api/reminders/seen":
+            reminders.seen([str(i) for i in body.get("ids") or []][:50])
+            return self._json({"ok": True})
         if path == "/api/goals":
             try:
                 b = body
@@ -343,6 +363,7 @@ def main():
     threading.Thread(target=llm.check, daemon=True).start()
     threading.Thread(target=watch_vault, daemon=True).start()
     telegram.start()
+    reminders.start(notify=telegram.notify)
     backup.start()
     srv = Server((HOST, PORT), Handler)
     SERVER["srv"] = srv
@@ -352,7 +373,7 @@ def main():
         # An already-open JARVIS tab reconnects (and reloads) by itself; only open one if none did.
         def open_if_needed():
             if not PAGE_SEEN["at"]:
-                webbrowser.open(ORIGIN)
+                open_page(ORIGIN)
         threading.Timer(BROWSER_WAIT, open_if_needed).start()
     try:
         srv.serve_forever()

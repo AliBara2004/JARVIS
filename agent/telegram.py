@@ -67,6 +67,15 @@ def status():
     return out
 
 
+def notify(text):
+    """Push a reminder to the paired chat. False if Telegram isn't set up or paired."""
+    chat = _load().get("chat_id")
+    if not (enabled() and chat):
+        return False
+    _send(chat, "⏰ " + text)
+    return True
+
+
 def unpair():
     s = _load()
     s.pop("chat_id", None)

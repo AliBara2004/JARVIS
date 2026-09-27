@@ -61,8 +61,8 @@ check("No API key names in browser code", not leaks, str(leaks))
 WRITE = re.compile(r"open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
 check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache), "
-      "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules) and usage.py (the spend log) write files",
-      writers == ["backup.py", "checkin.py", "data.py", "google.py", "market.py", "memory.py", "status.py", "telegram.py", "usage.py"],
+      "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log) and reminders.py (data/reminders.json) write files",
+      writers == ["backup.py", "checkin.py", "data.py", "google.py", "market.py", "memory.py", "reminders.py", "status.py", "telegram.py", "usage.py"],
       f"writers: {writers}")
 check("telegram.py only writes data/telegram.json", 'STATE = data.ROOT / "data" / "telegram.json"'
       in src(ROOT / "agent" / "telegram.py"))
@@ -270,6 +270,38 @@ check("'bench' finds 'Bench press'", fitness.matches("bench", "Bench press") and
 check("mini.py writes no files and only talks to JARVIS on localhost",
       not re.search(r"(?<![.\w])open\(|write_text|write_bytes", code_only(ROOT / "agent" / "mini.py"))
       and '"127.0.0.1"' in src(ROOT / "agent" / "mini.py"))
+
+print("\nReminders")
+import datetime as _dt  # noqa: E402
+import tempfile  # noqa: E402
+import reminders  # noqa: E402
+_real_file = reminders.FILE
+reminders.FILE = Path(tempfile.mkdtemp()) / "reminders.json"
+try:
+    now = reminders._now()
+    past = (now - _dt.timedelta(minutes=2)).strftime(reminders.FMT)
+    soon = (now + _dt.timedelta(minutes=30)).strftime(reminders.FMT)
+    try:
+        reminders.add("too late", (now - _dt.timedelta(hours=1)).strftime(reminders.FMT))
+        check("A reminder in the past is refused", False)
+    except ValueError:
+        check("A reminder in the past is refused", True)
+    reminders.add("later", soon)
+    reminders.add("now", (now + _dt.timedelta(minutes=1)).strftime(reminders.FMT), repeat="daily")
+    db = reminders._load(); db["items"][-1]["due"] = past; reminders._save(db)      # make it due
+    fired = reminders.check()
+    check("A due reminder fires once and a daily one comes back tomorrow",
+          [a["text"] for a in fired] == ["now"] and any(i["text"] == "now" and i["due"] > soon for i in reminders.upcoming())
+          and any(i["text"] == "later" for i in reminders.upcoming()))
+    reminders.add("nudge", (now + _dt.timedelta(minutes=1)).strftime(reminders.FMT), condition="prospect_contacted", arg="No Such Co")
+    db = reminders._load(); db["items"][-1]["due"] = past; reminders._save(db)
+    check("A nudge whose condition no longer holds stays quiet", not reminders.check())
+    reminders.seen([a["id"] for a in reminders.alerts()])
+    check("Seen alerts don't show again", not reminders.alerts())
+    check("Cancel by words", [i["text"] for i in reminders.cancel("later")] == ["later"])
+finally:
+    reminders.FILE = _real_file
+check("Reminders can't be set from a forwarded message", "set_reminder" in tools.WRITES and "cancel_reminder" in tools.WRITES)
 
 print("\nModel routing")
 if llm.ROUTING != "off" and llm.FAST_MODEL != llm.MODEL:

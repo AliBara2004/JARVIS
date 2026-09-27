@@ -20,3 +20,5 @@ data/telegram.json
 data/telegram.tmp
 data/checkin.json
 data/checkin.tmp
+data/reminders.json
+data/reminders.tmp

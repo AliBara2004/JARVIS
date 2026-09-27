@@ -21,6 +21,7 @@ import clock
 import data
 import fitness
 import goals
+import reminders
 import llm
 import market
 import memory
@@ -370,8 +371,12 @@ def find_niches():
 
 
 # ------------------------------------------------------------------ draft_message
-def draft_message(to, body, subject="", channel="email"):
+def draft_message(to, body, subject="", channel="email", prospect=""):
     actions = [{"id": "copy", "label": "Copy", "style": "primary"}]
+    if prospect:
+        n, _ = _find_item(prospect, ["prospect"])
+        if n:
+            status.record(n.rel, _stage(n), "outreach drafted")
     if channel == "email":
         pid = _pend("gmail_draft", {"to": to, "subject": subject, "body": body}, f"Gmail draft to {to}"[:60])
         actions.append({"id": pid, "label": "Save to Gmail drafts", "style": "primary"})
@@ -622,6 +627,7 @@ def widgets():
     u = usage.summary()
     return {"date": clock.uk_today().isoformat(), "goals": items,
             "training": fitness.summary(), "next": _next_event(), "activity": activity(),
+            "reminders": [{"text": i["text"], "when": reminders.describe(i)} for i in reminders.upcoming(4)],
             "spend": {"usd": round(u["today"]["usd"], 2), "budget": u["budget_usd"],
                       "models": {m: round(v["usd"], 2) for m, v in u["today"].get("models", {}).items()}}}
 
@@ -637,6 +643,88 @@ def set_goal(index, done):
 def add_goal_from_widget(text):
     add_goals([text])
     return widgets()
+
+
+# ------------------------------------------------------------------ reminders + nudges
+def _reminders_card(items, title="Reminders"):
+    rows = [{"text": i["text"], "sub": reminders.describe(i), "tag": "nudge" if i["condition"] != "none" else "⏰"} for i in items]
+    return card("reminders", title, rows or [{"text": "Nothing scheduled"}],
+                foot="Sent to Telegram (if paired) and shown here when due. Kept in data/reminders.json.")
+
+
+def set_reminder(text, when, repeat="none", condition="none", about=""):
+    try:
+        item = reminders.add(text, when, repeat, condition, about)
+    except ValueError as e:
+        return result(str(e), [], {"error": str(e)})
+    return result(f"Reminder set for {reminders.describe(item)}.", [_reminders_card([item], "Reminder set")],
+                  {"reminder_set": f"{item['text']} ({reminders.describe(item)})", "id": item["id"]})
+
+
+def list_reminders():
+    items = reminders.upcoming()
+    return result(f"{len(items)} scheduled." if items else "Nothing scheduled.", [_reminders_card(items)],
+                  {"reminders": [{**i, "when": reminders.describe(i)} for i in items]})
+
+
+def cancel_reminder(which):
+    gone = reminders.cancel(which)
+    if not gone:
+        return result("I couldn't find that reminder.", [_reminders_card(reminders.upcoming())],
+                      {"error": "not found", "reminders": [i["text"] for i in reminders.upcoming()]})
+    return result(f"Cancelled: {', '.join(i['text'] for i in gone)}.", [], {"cancelled": [i["text"] for i in gone]})
+
+
+# ------------------------------------------------------------------ outreach: who to write to, and who to chase
+FOLLOW_UP_DAYS = 3
+
+
+def _facts(n):
+    """The lines add_prospect wrote (Website:, Why they fit: …) as a dict."""
+    out = {}
+    for line in n.text.splitlines():
+        if ":" in line and not line.startswith(("#", "-")):
+            k, v = line.split(":", 1)
+            v = re.sub(r"\[\[([^\]|]*)(\|[^\]]+)?\]\]", r"\1", v).strip()
+            if v and not v.startswith("("):                 # skip blanks and template hints like "(say where…)"
+                out[k.strip().lower()] = v
+    return out
+
+
+def outreach_plan(count=3):
+    count = max(1, min(int(count or 3), 8))
+    now = time.time()
+    leads, chase = [], []
+    for n in _pipeline():
+        st = _stage(n)
+        hist = status.history(n.rel)
+        drafted = any("outreach drafted" in (h.get("note") or "") and now - h["at"] < 7 * 86400 for h in hist)
+        if st == "lead" and not drafted:
+            leads.append(n)
+        elif st == "contacted":
+            since = max((h["at"] for h in hist if h["stage"] == "contacted"), default=None)
+            days = (now - since) / 86400 if since else None
+            if days is None or days >= FOLLOW_UP_DAYS:
+                chase.append((n, days))
+    leads = leads[:count]
+    offer = _note("Zapier to n8n Migration") or next((n for n in V().notes if n.type == "offer"), None)
+    offer_text = offer.text[:1500] if offer else ""
+    rows = [{"text": n.title, "sub": _facts(n).get("why they fit", "no fit signal noted"), "note": n.id, "tag": "write"} for n in leads]
+    rows += [{"text": n.title, "sub": f"contacted {round(d)} days ago, no reply logged" if d else "contacted, date unknown",
+              "note": n.id, "tag": "chase"} for n, d in chase]
+    say = (f"{len(leads)} to write to" + (f", {len(chase)} to chase" if chase else "") + ".") if rows else \
+          "No fresh leads and nobody to chase. Want me to find some prospects?"
+    return result(say, [card("plan", "Outreach · who to write to, who to chase", rows or [{"text": "Pipeline is empty"}],
+                             foot="Drafts go to Gmail drafts only when you tap. JARVIS never sends.")],
+                  {"write_to": [{"company": n.title, **_facts(n)} for n in leads],
+                   "chase": [{"company": n.title, "days_since_contact": round(d) if d else None, **_facts(n)} for n, d in chase],
+                   "offer": {"title": offer.title if offer else None, "text": offer_text},
+                   "how": "For each company, call draft_message once (channel email, prospect = the company name, to = the "
+                          "company name unless an address is known). Write as Ali: 90-130 words; open with the specific "
+                          "thing you noticed about them (their fit signal), one concrete outcome from his offer, one easy "
+                          "ask (a free 15-minute look at their setup). No hype, no 'I hope this finds you well', never "
+                          "invent facts about them. Follow-ups: 50-70 words, refer to the first email, one question."},
+                  [n.id for n in leads] + [n.id for n, _ in chase])
 
 
 # ------------------------------------------------------------------ market_brief (pre-session)
@@ -835,11 +923,18 @@ def set_status(title, stage, note=""):
                       [], {"error": "ambiguous" if alts else "not found", "candidates": [a.title for a in alts]})
     before = _stage(n) if n.type == "prospect" else next((i["stage"] for i in _content_items() if i["note"] is n), None)
     status.record(n.rel, stage, note)
-    return result(f"Marked {n.title} as {stage}.",
+    nudge = None
+    if n.type == "prospect" and stage == "contacted":
+        day = clock.uk_today() + dt.timedelta(days=FOLLOW_UP_DAYS)
+        item = reminders.add(f"Follow up with {n.title}: no reply logged since you contacted them.",
+                             f"{day.isoformat()}T10:00", condition="prospect_contacted", arg=n.title)
+        nudge = reminders.describe(item)
+    return result(f"Marked {n.title} as {stage}." + (f" I'll nudge you {nudge.split(' · ')[0]} if they haven't replied." if nudge else ""),
                   [card("status", f"{n.title} · {before} → {stage}", [{"text": n.title, "sub": n.rel, "note": n.id,
                                                                        "tag": stage}],
                         foot="Recorded in JARVIS's own log (data/status_log.json). Your note is unchanged.")],
-                  {"marked": f"{n.title} as {stage}", "was": before}, [n.id])
+                  {"marked": f"{n.title} as {stage}", "was": before,
+                   **({"reminder_set": f"follow up with {n.title} ({nudge})"} if nudge else {})}, [n.id])
 
 
 # ------------------------------------------------------------------ first client: prospects + outreach
@@ -1235,7 +1330,8 @@ SPECS = [
      "description": "Write a draft email or message for Ali to send himself. JARVIS can never send anything.",
      "input_schema": {"type": "object", "properties": {
          "to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"},
-         "channel": {"type": "string", "enum": ["email", "linkedin", "whatsapp", "other"]}},
+         "channel": {"type": "string", "enum": ["email", "linkedin", "whatsapp", "other"]},
+         "prospect": {"type": "string", "description": "If this is outreach to a prospect: the company, so it's tracked"}},
          "required": ["to", "body"]}},
     {"name": "draft_script",
      "description": "Write a voiceover script for Ali's TikTok (@VideosByAl1): commentary over his vintage-camera "
@@ -1347,6 +1443,27 @@ SPECS = [
      "description": "Training so far: sessions this week, streaks, last session, personal bests. With exercise, "
                     "that lift's (or run's) recent history.",
      "input_schema": {"type": "object", "properties": {"exercise": {"type": "string"}}}},
+    {"name": "set_reminder",
+     "description": "Schedule a reminder, or a nudge that only fires if something still hasn't happened. It reaches Ali on "
+                    "Telegram and on the page. Work out 'when' from the time stamp on his message (UK time). Say back "
+                    "exactly what you set and when.",
+     "input_schema": {"type": "object", "properties": {
+         "text": {"type": "string", "description": "What to say when it fires, in plain words ('Call Cobalt Dental')"},
+         "when": {"type": "string", "description": "UK local time, YYYY-MM-DDTHH:MM"},
+         "repeat": {"type": "string", "enum": ["none", "daily", "weekdays"]},
+         "condition": {"type": "string", "enum": ["none", "no_workout_today", "goals_open", "goal_open", "prospect_contacted"],
+                       "description": "Nudge only if this still holds at that time. none = always fire"},
+         "about": {"type": "string", "description": "For goal_open: the goal. For prospect_contacted: the company"}},
+         "required": ["text", "when"]}},
+    {"name": "list_reminders", "description": "What's scheduled.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "cancel_reminder",
+     "description": "Cancel reminders by id or by words in their text.",
+     "input_schema": {"type": "object", "properties": {"which": {"type": "string"}}, "required": ["which"]}},
+    {"name": "outreach_plan",
+     "description": "Who Ali should write to (fresh leads) and who to chase (contacted 3+ days ago, no reply), with the facts "
+                    "on each and his offer. Then write each email with draft_message (prospect = company). Use when he "
+                    "wants to do outreach, follow-ups, or 'email my leads'.",
+     "input_schema": {"type": "object", "properties": {"count": {"type": "integer", "description": "Fresh leads to include, default 3"}}}},
     {"name": "remember",
      "description": "Store one fact about Ali in JARVIS's memory, loaded into every future conversation. Use when he "
                     "asks you to remember something, or tells you something about himself that will still matter in "
@@ -1386,14 +1503,15 @@ FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox
          "add_prospect": add_prospect, "weekly_review": weekly_review, "backup_notes": backup_notes,
          "edit_note": edit_note, "undo_last_edit": undo_last_edit, "list_goals": list_goals,
          "add_goals": add_goals, "tick_goal": tick_goal, "log_workout": log_workout,
-         "workout_stats": workout_stats}
+         "workout_stats": workout_stats, "set_reminder": set_reminder, "list_reminders": list_reminders,
+         "cancel_reminder": cancel_reminder, "outreach_plan": outreach_plan}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches", "find_prospects",
                      "weekly_review", "attachment"}
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
 WRITES = {"remember", "write_note", "set_status", "add_prospect", "edit_note", "undo_last_edit", "add_goals",
-          "tick_goal", "log_workout"}
+          "tick_goal", "log_workout", "set_reminder", "cancel_reminder"}
 
 
 def run(name, args):

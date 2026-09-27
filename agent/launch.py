@@ -8,7 +8,6 @@ import http.client
 import json
 import sys
 import time
-import webbrowser
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -55,7 +54,7 @@ def main_():
             time.sleep(3)
         else:
             print("JARVIS is already running the latest version. Opening it.")
-            webbrowser.open(main.ORIGIN)
+            main.open_page(main.ORIGIN)
         return
     if now is not None:
         print("An older JARVIS is running. Restarting it with the latest version...")
