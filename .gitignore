@@ -27,3 +27,4 @@ data/conversation.json
 data/conversation.tmp
 data/video_stats.json
 data/video_stats.tmp
+evals/results/

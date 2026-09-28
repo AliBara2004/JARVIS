@@ -30,6 +30,10 @@ CONFIRM = re.compile(r"^\s*(yes|yep|yeah|confirm(ed)?|do it|go ahead|book it|add
 CANCEL = re.compile(r"^\s*(no|nope|cancel|don'?t|stop|scrap that)\b[\s.!]*$", re.I)
 
 
+# A reply that says something was done ("Ticked.", "Stored…", "Reminder set") when no writing tool ran.
+CLAIMED = re.compile(r"\b(ticked|stored|logged|saved|marked|remembered|filed|reminder('s| is)? set"
+                     r"|i'?ve (set|added|logged|saved|noted|ticked|stored|remembered|booked|scheduled|filed|marked))\b", re.I)
+
 # Ali asking, in his own words, for something to be kept. Needed for a write after untrusted text was read.
 ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this)"
                            r"|add|mark|move|set|filmed|posted|replied|edit|change|update|fix|replace|remove|tidy|rewrite|undo"
@@ -52,15 +56,18 @@ CHEAP = re.compile(r"^\s*(quick( one)?[:,]|use haiku|use the cheap (one|model)"
                    r"|(hi|hey|hiya|hello|morning|evening|afternoon|yo|sup)\b|good (morning|afternoon|evening|night)"
                    r"|(thanks|thank you|cheers|nice one|ta|ok|okay|cool|great|nice|got it|sound|safe)\b[\s!.]*$"
                    r"|(you there|can you hear me|are you (there|awake))"
-                   r"|(done|finished|did|ticked?|cross(ed)? off) (the |my )?\w+"
-                   r"|log (this|that|it)\b|log:|remind me\b|nudge me\b|cancel (the |my )?reminder"
                    r"|what time is it|what'?s the time|what day is it)", re.I)
+# Chat only: anything that writes (ticks, logs, reminders, remembering) goes to the everyday tier. The
+# evaluation (evals/jarvis_eval.py) caught Haiku saying "Ticked." and "Stored…" without calling the tool.
 CHEAP_MAX_WORDS = 14
 _route = {"strong_left": 0}
+FORCE_MODEL = None               # set by the evaluation to send every turn to one model
 
 
 def route(text, attached=False):
     """Pick the model for this turn. Same model for every tool round in the turn, so the cache holds."""
+    if FORCE_MODEL:
+        return FORCE_MODEL
     if llm.ROUTING == "off" or llm.FAST_MODEL == llm.MODEL:
         return llm.MODEL
     if EASY.search(text):
@@ -318,6 +325,7 @@ def _model_turn(text, emit, readonly=False, attachments=None, spoken=False):
         emit({"type": "text", "delta": delta})
         speech.feed(delta)
 
+    checked = False                  # the "said it, didn't do it" check runs at most once a turn
     for _ in range(MAX_TOOL_ROUNDS):
         sep["pending"] = bool(spoken)
         resp = llm.stream(system_blocks(), msgs, tools.SPECS, on_text=on_text, model=model)
@@ -333,6 +341,15 @@ def _model_turn(text, emit, readonly=False, attachments=None, spoken=False):
         if said:
             spoken.append(said)
         if resp.get("stop_reason") != "tool_use":
+            if (not checked and not readonly and said and CLAIMED.search(said)
+                    and not any(u in tools.WRITES for u in used)):
+                checked = True
+                nudge = {"role": "user", "content": "[JARVIS check, not from Ali: your reply says it's done, but no tool ran, "
+                                                    "so nothing was saved or changed. Do it now with the right tool, or "
+                                                    "tell Ali plainly that it isn't done.]"}
+                msgs.append(nudge)
+                turn.append(nudge)
+                continue
             break
         results = []
         for b in resp["content"]:

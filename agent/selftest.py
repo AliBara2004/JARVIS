@@ -6,6 +6,7 @@ Checks the rules in prompt.md against the code itself, so a rule that only
 lives in the prompt shows up here as a gap. Server checks run if JARVIS is up.
 """
 import http.client
+import os
 import re
 import subprocess
 import sys
@@ -71,7 +72,7 @@ check("status.py only writes data/status_log.json", 'FILE = data.ROOT / "data" /
       in src(ROOT / "agent" / "status.py"))
 check("usage.py only writes data/usage.json", 'FILE = data.ROOT / "data" / "usage.json"' in src(ROOT / "agent" / "usage.py"))
 check("Every paid call is counted (llm + voice report usage)",
-      src(ROOT / "agent" / "llm.py").count("usage.record_llm(") == 2 and src(ROOT / "agent" / "voice.py").count("usage.record_") == 3)
+      src(ROOT / "agent" / "llm.py").count("usage.record_llm(") == 3 and src(ROOT / "agent" / "voice.py").count("usage.record_") == 3)
 check("market.py only writes inside data/cache", 'CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"'
       in src(ROOT / "agent" / "market.py") and src(ROOT / "agent" / "market.py").count("write_text") == 1)
 check("Vault and memory writes use exclusive-create (can't overwrite)",
@@ -346,11 +347,15 @@ finally:
 check("Reminders can't be set from a forwarded message", "set_reminder" in tools.WRITES and "cancel_reminder" in tools.WRITES)
 
 print("\nModel routing")
-if llm.ROUTING != "off" and llm.FAST_MODEL != llm.MODEL:
+_tiers = (llm.MODEL, llm.FAST_MODEL, llm.CHEAP_MODEL, llm.ROUTING)
+llm.MODEL, llm.FAST_MODEL, llm.CHEAP_MODEL, llm.ROUTING = "strong", "everyday", "cheap", "auto"
+try:
     brain.reset()
-    check("Small talk, ticks, logs and reminders go to the cheapest tier",
-          all(brain.route(t) == llm.CHEAP_MODEL for t in ("morning, how's it going", "cheers", "done the gym",
-                                                          "log this: green tea", "remind me at 3 to call Cobalt")))
+    check("Small talk goes to the cheapest tier", all(brain.route(t) == llm.CHEAP_MODEL
+                                                      for t in ("morning, how's it going", "cheers", "what's the time?")))
+    check("Anything that writes (ticks, logs, reminders) never goes to the cheapest tier",
+          all(brain.route(t) != llm.CHEAP_MODEL for t in ("done the gym", "log this: green tea", "remind me at 3 to call Cobalt",
+                                                          "remember that I charge 1500")))
     check("Ordinary questions go to the everyday tier", brain.route("what's on my plate tomorrow?") == llm.FAST_MODEL)
     check("Research goes to the strong model", brain.route("research the best CRM for dentists") == llm.MODEL)
     check("The turn after a hard one stays strong", brain.route("make it shorter") == llm.MODEL
@@ -359,8 +364,42 @@ if llm.ROUTING != "off" and llm.FAST_MODEL != llm.MODEL:
           brain.route("hey so I was thinking about the whole Cobalt thing and whether I should change the offer") != llm.CHEAP_MODEL)
     check("Attachments go to the strong model", brain.route("what's this?", attached=True) == llm.MODEL)
     brain.reset()
-else:
-    print("  SKIP  routing is off")
+finally:
+    llm.MODEL, llm.FAST_MODEL, llm.CHEAP_MODEL, llm.ROUTING = _tiers
+_calls = []
+
+
+def _flaky(m):
+    _calls.append(m)
+    if m == "claude-opus-5-5":
+        raise llm.LLMError("400: Your credit balance is too low")
+    return {"content": [], "stop_reason": "end_turn", "usage": {}}
+
+
+_fo = llm.FAILOVER
+llm.FAILOVER = ["openrouter:openai/gpt-6-luna"]
+_key = os.environ.get("OPENROUTER_API_KEY")
+os.environ["OPENROUTER_API_KEY"] = _key or "test"
+try:
+    llm._with_failover("claude-opus-5-5", _flaky)
+    check("When a provider runs out, the turn moves to the failover model", _calls[-1] == "openrouter:openai/gpt-6-luna")
+    _calls.clear()
+    try:
+        llm._with_failover("claude-opus-5-5", _flaky, said=["Right,"])
+    except llm.LLMError:
+        pass
+    check("A reply that already started speaking isn't re-run", _calls == ["claude-opus-5-5"])
+finally:
+    llm.FAILOVER = _fo
+    if _key is None:
+        os.environ.pop("OPENROUTER_API_KEY", None)
+check("Web search maps to OpenRouter's web plugin, and its citations back to sources",
+      llm._or_web([{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]) == [{"id": "web", "max_results": 6}]
+      and llm._or_blocks("x", [], "stop", {}, [{"type": "web_search_result", "url": "https://a.b", "title": "A"}])
+      ["content"][0]["type"] == "web_search_tool_result")
+check("A reply claiming an action no tool performed is caught",
+      bool(brain.CLAIMED.search("Ticked.")) and bool(brain.CLAIMED.search("Stored: Ali charges £1500"))
+      and not brain.CLAIMED.search("Evening, Ali. What's on?"))
 check("Finished turns go back without their thinking (tokens, and Opus 5.5's history check)",
       brain._without_thinking({"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "x"},
                                                               {"type": "text", "text": "hi"}]})["content"] == [{"type": "text", "text": "hi"}])

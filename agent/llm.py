@@ -18,6 +18,10 @@ CHEAP_MODEL = os.environ.get("JARVIS_CHEAP_MODEL", "claude-haiku-4-5")   # small
 CACHE_TTL = os.environ.get("JARVIS_CACHE_TTL", "1h")                 # "1h" survives the gaps between chats; "5m" = default
 ROUTING = os.environ.get("JARVIS_ROUTING", "auto").lower()           # "off" = every turn on MODEL
 EFFORT = os.environ.get("JARVIS_EFFORT", "low")      # chat is fast at low; research uses medium
+# If a model fails (no credit, provider down), the turn is re-run on the first of these that has a key and
+# isn't known to be down. Different providers, so one running out never leaves JARVIS silent.
+FAILOVER = [m.strip() for m in os.environ.get("JARVIS_FAILOVER", "openrouter:openai/gpt-6-luna,claude-sonnet-5").split(",")
+            if m.strip()]
 FALLBACK_BETA = "server-side-fallback-2026-07-01"    # re-runs a declined request on Anthropic's recommended model
 
 _state = {"status": "unchecked", "detail": "", "error_at": 0.0}
@@ -29,10 +33,19 @@ class LLMError(Exception):
     pass
 
 
-def available():
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+def _has_key(model):
+    return bool(_or_key()) if is_openrouter(model) else bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def _usable(model):
+    """Has a key, and (for Anthropic direct) hasn't just failed hard: no credit, bad key, unreachable."""
+    if not _has_key(model):
         return False
-    return _state["status"] != "error" or time.time() - _state["error_at"] > RETRY_AFTER
+    return is_openrouter(model) or _state["status"] != "error" or time.time() - _state["error_at"] > RETRY_AFTER
+
+
+def available():
+    return any(_usable(m) for m in [MODEL] + FAILOVER)
 
 
 def _fail(detail):
@@ -40,9 +53,12 @@ def _fail(detail):
 
 
 def status():
-    info = {"model": MODEL, "fast_model": FAST_MODEL if ROUTING != "off" else None}
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {"state": "missing", "detail": "No ANTHROPIC_API_KEY in .env", **info}
+    info = {"model": MODEL, "fast_model": FAST_MODEL if ROUTING != "off" else None,
+            "failover": [m for m in FAILOVER if _has_key(m)]}
+    if not any(_has_key(m) for m in [MODEL] + FAILOVER):
+        return {"state": "missing", "detail": "No API key in .env (ANTHROPIC_API_KEY or OPENROUTER_API_KEY)", **info}
+    if _state["status"] == "error" and available():       # Anthropic is down, but the turn has somewhere to go
+        return {"state": "ready", "detail": f"on failover ({_state['detail']})", **info}
     return {"state": _state["status"], "detail": _state["detail"], **info}
 
 
@@ -55,19 +71,24 @@ def _headers(fallbacks=False):
 
 
 def check():
-    """Free reachability check: look the model up. Never spends tokens."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        _state.update(status="missing", detail="No key")
-        return
+    """Free reachability check: look each model up (OpenRouter: check the key). Never spends tokens."""
     for model in dict.fromkeys([MODEL] + ([FAST_MODEL, CHEAP_MODEL] if ROUTING != "off" else [])):
-        req = urllib.request.Request(f"{API}/models/{model}", headers=_headers())
+        if not _has_key(model):
+            _state.update(status="missing", detail=f"No key for {model}")
+            return
+        if is_openrouter(model):
+            req = urllib.request.Request("https://openrouter.ai/api/v1/key",
+                                         headers={"Authorization": f"Bearer {_or_key()}"})
+        else:
+            req = urllib.request.Request(f"{API}/models/{model}", headers=_headers())
         try:
             with urllib.request.urlopen(req, timeout=15):
-                _state.update(status="ready", detail="")
+                pass
         except urllib.error.HTTPError as e:
             return _fail(f"{model}: {e.code}: {_msg(e)}")
         except urllib.error.URLError as e:
             return _fail(f"unreachable: {e.reason}")
+    _state.update(status="ready", detail="")
 
 
 def cache_mark():
@@ -102,7 +123,30 @@ def _body(system, messages, tools, max_tokens, effort, model):
     return body
 
 
+def _with_failover(model, run, said=None):
+    """run(model); if that fails, run it again on the first usable FAILOVER model. A streamed reply that has
+    already started speaking isn't re-run (Ali would hear it twice), and a provider known to be down is
+    skipped straight away rather than waited on."""
+    backups = [m for m in FAILOVER if m != model and _usable(m)]
+    if backups and not _usable(model):
+        model, backups = backups[0], backups[1:]
+    while True:
+        try:
+            return run(model)
+        except LLMError as e:
+            if not backups or said or "malformed" in str(e):
+                raise
+            print(f"[llm] {model} failed ({e}); trying {backups[0]}", flush=True)
+            model, backups = backups[0], backups[1:]
+
+
 def call(system, messages, tools=None, max_tokens=4000, effort=None, model=None):
+    return _with_failover(model or MODEL, lambda m: _call(system, messages, tools, max_tokens, effort, m))
+
+
+def _call(system, messages, tools, max_tokens, effort, model):
+    if is_openrouter(model):
+        return _or_request(system, messages, tools, max_tokens, model, None, effort)
     body = _body(system, messages, tools, max_tokens, effort, model)
     with _open(body) as r:
         resp = json.loads(r.read())
@@ -114,6 +158,18 @@ def stream(system, messages, tools=None, max_tokens=4000, effort=None, on_text=N
     """Same result as call(), but text reaches on_text(delta) as it's generated.
     Rebuilds every content block (thinking + signature, text, tool_use) exactly, so the
     message can go back into the conversation unchanged."""
+    said = []
+
+    def emit(d):
+        said.append(d)
+        if on_text:
+            on_text(d)
+    return _with_failover(model or MODEL, lambda m: _stream(system, messages, tools, max_tokens, effort, emit, m), said)
+
+
+def _stream(system, messages, tools, max_tokens, effort, on_text, model):
+    if is_openrouter(model):
+        return _or_request(system, messages, tools, max_tokens, model, on_text, effort)
     body = _body(system, messages, tools, max_tokens, effort, model)
     body["stream"] = True
     try:
@@ -215,3 +271,182 @@ def _msg(e):
         return (b.get("error") or {}).get("message") or str(b)
     except Exception:
         return e.reason or "error"
+
+
+# ================================================================== other providers, via OpenRouter
+# A model named "openrouter:<id>" (e.g. openrouter:deepseek/deepseek-v4.1-flash) is sent to OpenRouter's
+# OpenAI-style API. Messages and tools are translated from Anthropic's shape and the reply is translated
+# back, so brain.py and tools.py never know the difference. Every request demands zero data retention:
+# only hosts that neither store nor train on it are used. Claude-only features (web search as a server
+# tool, thinking blocks) are left out or translated: web search becomes OpenRouter's web plugin, whose
+# citations come back as web_search_tool_result blocks; Claude models keep their cache marks.
+OR_API = "https://openrouter.ai/api/v1/chat/completions"
+OR_PREFIX = "openrouter:"
+
+
+def is_openrouter(model):
+    return str(model or "").startswith(OR_PREFIX)
+
+
+def _or_key():
+    return os.environ.get("OPENROUTER_API_KEY", "").strip()
+
+
+def _or_text(content):
+    if isinstance(content, str):
+        return content
+    return "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+
+
+def _or_system(system, model):
+    """Claude via OpenRouter still honours cache marks on the system prompt (the bulk of every request)."""
+    if isinstance(system, str) or "/claude" not in model:
+        return _or_text(system)
+    return [{"type": "text", "text": b.get("text", ""), **({"cache_control": b["cache_control"]} if b.get("cache_control") else {})}
+            for b in system if b.get("type") == "text"]
+
+
+def _or_messages(system, messages, model=""):
+    out = [{"role": "system", "content": _or_system(system, model)}]
+    for m in messages:
+        c = m["content"]
+        if isinstance(c, str):
+            out.append({"role": m["role"], "content": c})
+            continue
+        if m["role"] == "user":
+            parts, results = [], []
+            for b in c:
+                t = b.get("type")
+                if t == "text":
+                    parts.append({"type": "text", "text": b["text"]})
+                elif t == "image" and b.get("source", {}).get("type") == "base64":
+                    parts.append({"type": "image_url", "image_url": {"url": f"data:{b['source']['media_type']};base64,{b['source']['data']}"}})
+                elif t == "document" and b.get("source", {}).get("type") == "base64":
+                    parts.append({"type": "file", "file": {"filename": "attachment.pdf",
+                                                            "file_data": f"data:application/pdf;base64,{b['source']['data']}"}})
+                elif t == "tool_result":
+                    results.append({"role": "tool", "tool_call_id": b["tool_use_id"], "content": _or_text(b.get("content")) or "(empty)"})
+            out.extend(results)                  # tool results must come straight after the assistant's calls
+            if parts:
+                out.append({"role": "user", "content": parts})
+        else:
+            calls = [{"id": b["id"], "type": "function",
+                      "function": {"name": b["name"], "arguments": json.dumps(b.get("input") or {})}}
+                     for b in c if b.get("type") == "tool_use"]
+            msg = {"role": "assistant", "content": _or_text(c) or None}
+            if calls:
+                msg["tool_calls"] = calls
+            out.append(msg)
+    return out
+
+
+def _or_tools(tools):
+    return [{"type": "function", "function": {"name": t["name"], "description": t.get("description", ""),
+                                              "parameters": t["input_schema"]}}
+            for t in tools or [] if "input_schema" in t]          # server tools (web search) are Claude-only
+
+
+def _or_web(tools):
+    """Anthropic's web_search server tool, as OpenRouter's web plugin."""
+    ws = [t for t in tools or [] if t.get("name") == "web_search" and "input_schema" not in t]
+    return [{"id": "web", "max_results": max(3, 2 * (ws[0].get("max_uses") or 3))}] if ws else None
+
+
+def _or_cites(notes, into):
+    for a in notes or []:
+        c = a.get("url_citation") or {}
+        if a.get("type") == "url_citation" and c.get("url") and c["url"] not in [x["url"] for x in into]:
+            into.append({"type": "web_search_result", "url": c["url"], "title": c.get("title") or c["url"]})
+
+
+def _or_blocks(text, calls, finish, usage_, cites=None):
+    content = [{"type": "web_search_tool_result", "tool_use_id": "openrouter_web", "content": cites}] if cites else []
+    content += [{"type": "text", "text": text}] if text else []
+    for c in calls:
+        try:
+            args = json.loads(c["arguments"] or "{}")
+        except json.JSONDecodeError:
+            raise LLMError("tool call arrived malformed")
+        content.append({"type": "tool_use", "id": c["id"] or f"call_{len(content)}", "name": c["name"], "input": args})
+    stop = "tool_use" if calls else "max_tokens" if finish == "length" else "end_turn"
+    u = usage_ or {}
+    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+    used = {"input_tokens": max(0, (u.get("prompt_tokens") or 0) - cached), "output_tokens": u.get("completion_tokens") or 0,
+            "cache_read_input_tokens": cached, "cache_creation_input_tokens": 0, "cost": u.get("cost")}
+    return {"content": content, "stop_reason": stop, "usage": used}
+
+
+def _or_request(system, messages, tools, max_tokens, model, on_text, effort=None):
+    if not _or_key():
+        raise LLMError("No OPENROUTER_API_KEY in .env")
+    body = {"model": model[len(OR_PREFIX):], "messages": _or_messages(system, messages, model), "max_tokens": max_tokens,
+            "usage": {"include": True}, "provider": {"data_collection": "deny", "zdr": True},
+            "reasoning": {"effort": effort or EFFORT, "exclude": True}}
+    if _or_tools(tools):
+        body["tools"] = _or_tools(tools)
+    if _or_web(tools):
+        body["plugins"] = _or_web(tools)
+    if on_text is not None:
+        body["stream"] = True
+    req = urllib.request.Request(OR_API, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {_or_key()}", "Content-Type": "application/json",
+                                          "X-Title": "JARVIS"})
+    for attempt in range(3):
+        try:
+            r = urllib.request.urlopen(req, timeout=120)
+            break
+        except urllib.error.HTTPError as e:
+            try:
+                msg = (json.loads(e.read() or b"{}").get("error") or {}).get("message") or e.reason
+            except Exception:
+                msg = e.reason
+            if e.code in (429, 500, 502, 503) and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise LLMError(f"OpenRouter {e.code}: {msg}")
+        except urllib.error.URLError as e:
+            if attempt < 2:
+                time.sleep(1.5)
+                continue
+            raise LLMError(f"OpenRouter unreachable: {e.reason}")
+    with r:
+        if on_text is None:
+            resp = json.loads(r.read())
+            if resp.get("error"):
+                raise LLMError(f"OpenRouter: {resp['error'].get('message')}")
+            ch = resp["choices"][0]
+            msg = ch.get("message") or {}
+            calls = [{"id": t.get("id"), "name": t["function"]["name"], "arguments": t["function"].get("arguments")}
+                     for t in msg.get("tool_calls") or []]
+            cites = []
+            _or_cites(msg.get("annotations"), cites)
+            out = _or_blocks(msg.get("content") or "", calls, ch.get("finish_reason"), resp.get("usage"), cites)
+        else:
+            text, calls, finish, usage_, cites = "", {}, None, None, []
+            for raw in r:
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if not line.startswith("data:"):
+                    continue                         # blank lines and ": OPENROUTER PROCESSING" keep-alives
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                ev = json.loads(payload)
+                if ev.get("error"):
+                    raise LLMError(f"OpenRouter: {ev['error'].get('message')}")
+                usage_ = ev.get("usage") or usage_
+                for ch in ev.get("choices") or []:
+                    d = ch.get("delta") or {}
+                    _or_cites(d.get("annotations"), cites)
+                    if d.get("content"):
+                        text += d["content"]
+                        on_text(d["content"])
+                    for t in d.get("tool_calls") or []:
+                        slot = calls.setdefault(t.get("index", 0), {"id": None, "name": "", "arguments": ""})
+                        slot["id"] = t.get("id") or slot["id"]
+                        fn = t.get("function") or {}
+                        slot["name"] += fn.get("name") or ""
+                        slot["arguments"] += fn.get("arguments") or ""
+                    finish = ch.get("finish_reason") or finish
+            out = _or_blocks(text, [calls[i] for i in sorted(calls)], finish, usage_, cites)
+    usage.record_llm(model, out["usage"])
+    return out

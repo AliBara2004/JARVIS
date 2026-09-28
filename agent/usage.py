@@ -57,6 +57,10 @@ def record_llm(model, u):
     """u is the API's usage object (input_tokens, output_tokens, cache_*_input_tokens, server_tool_use)."""
     if not u:
         return
+    if u.get("cost") is not None:                 # OpenRouter says exactly what the call cost
+        _add(model=model, usd=float(u["cost"]), calls=1, input=u.get("input_tokens") or 0,
+             output=u.get("output_tokens") or 0, cache_read=u.get("cache_read_input_tokens") or 0)
+        return
     pin, pout = MODEL_PRICES.get(model, MODEL_PRICES["claude-opus-5"])
     inp, out = u.get("input_tokens") or 0, u.get("output_tokens") or 0
     cr, cw = u.get("cache_read_input_tokens") or 0, u.get("cache_creation_input_tokens") or 0

@@ -765,7 +765,7 @@ def outreach_plan(count=3):
     rows = [{"text": n.title, "sub": _facts(n).get("why they fit", "no fit signal noted"), "note": n.id, "tag": "write"} for n in leads]
     rows += [{"text": n.title, "sub": f"contacted {round(d)} days ago, no reply logged" if d else "contacted, date unknown",
               "note": n.id, "tag": "chase"} for n, d in chase]
-    say = (f"{len(leads)} to write to" + (f", {len(chase)} to chase" if chase else "") + ".") if rows else \
+    say = (f"{len(leads)} to write to" + (f"; chase {', '.join(n.title for n, _ in chase)}" if chase else "") + ".") if rows else \
           "No fresh leads and nobody to chase. Want me to find some prospects?"
     return result(say, [card("plan", "Outreach · who to write to, who to chase", rows or [{"text": "Pipeline is empty"}],
                              foot="Drafts go to Gmail drafts only when you tap. JARVIS never sends.")],
