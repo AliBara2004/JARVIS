@@ -12,8 +12,10 @@ import data  # noqa: F401 — loads .env before the constants below are read
 import usage
 
 API = "https://api.anthropic.com/v1"
-MODEL = os.environ.get("JARVIS_MODEL", "claude-opus-5")            # hard turns, research, attachments
-FAST_MODEL = os.environ.get("JARVIS_FAST_MODEL", "claude-sonnet-5")  # everyday chat (brain.route picks)
+MODEL = os.environ.get("JARVIS_MODEL", "claude-opus-5-5")          # hard turns, research, attachments, filing
+FAST_MODEL = os.environ.get("JARVIS_FAST_MODEL", "claude-sonnet-5")  # everyday questions (brain.route picks)
+CHEAP_MODEL = os.environ.get("JARVIS_CHEAP_MODEL", "claude-haiku-4-5")   # small talk, ticks, logs, reminders
+CACHE_TTL = os.environ.get("JARVIS_CACHE_TTL", "1h")                 # "1h" survives the gaps between chats; "5m" = default
 ROUTING = os.environ.get("JARVIS_ROUTING", "auto").lower()           # "off" = every turn on MODEL
 EFFORT = os.environ.get("JARVIS_EFFORT", "low")      # chat is fast at low; research uses medium
 FALLBACK_BETA = "server-side-fallback-2026-07-01"    # re-runs a declined request on Anthropic's recommended model
@@ -57,7 +59,7 @@ def check():
     if not os.environ.get("ANTHROPIC_API_KEY"):
         _state.update(status="missing", detail="No key")
         return
-    for model in dict.fromkeys([MODEL] + ([FAST_MODEL] if ROUTING != "off" else [])):
+    for model in dict.fromkeys([MODEL] + ([FAST_MODEL, CHEAP_MODEL] if ROUTING != "off" else [])):
         req = urllib.request.Request(f"{API}/models/{model}", headers=_headers())
         try:
             with urllib.request.urlopen(req, timeout=15):
@@ -66,6 +68,10 @@ def check():
             return _fail(f"{model}: {e.code}: {_msg(e)}")
         except urllib.error.URLError as e:
             return _fail(f"unreachable: {e.reason}")
+
+
+def cache_mark():
+    return {"type": "ephemeral", "ttl": "1h"} if CACHE_TTL == "1h" else {"type": "ephemeral"}
 
 
 def _cached(messages):
@@ -79,17 +85,18 @@ def _cached(messages):
     if isinstance(content, str):
         content = [{"type": "text", "text": content}]
     content = list(content)
-    content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+    content[-1] = {**content[-1], "cache_control": cache_mark()}
     last["content"] = content
     return messages[:-1] + [last]
 
 
 def _body(system, messages, tools, max_tokens, effort, model):
-    body = {
-        "model": model or MODEL, "max_tokens": max_tokens, "system": system, "messages": _cached(messages),
-        "thinking": {"type": "adaptive"},
-        "output_config": {"effort": effort or EFFORT},
-    }
+    model = model or MODEL
+    body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": _cached(messages)}
+    if "haiku" not in model:
+        # Haiku 4.5 takes neither adaptive thinking nor effort; the cheap tier just answers
+        body["thinking"] = {"type": "adaptive"}
+        body["output_config"] = {"effort": effort or EFFORT}
     if tools:
         body["tools"] = tools
     return body

@@ -23,8 +23,10 @@ Or double-click the **JARVIS** desktop shortcut (`Start JARVIS.cmd` → `agent/l
    | Setting | What it's for | Where to get it |
    |---|---|---|
    | `ANTHROPIC_API_KEY` | The brain: conversation, tools, judgement | console.anthropic.com → API Keys. Add credit and set a monthly limit under Plans & Billing |
-   | `JARVIS_MODEL` | Which Claude model for hard turns | Default `claude-opus-5` |
-   | `JARVIS_FAST_MODEL` | Which model for everyday chat | Default `claude-sonnet-5` |
+   | `JARVIS_MODEL` | Which Claude model for hard turns (drafting, research, filing, attachments, long questions) | Default `claude-opus-5-5` |
+   | `JARVIS_FAST_MODEL` | Which model for everyday questions | Default `claude-sonnet-5` |
+   | `JARVIS_CHEAP_MODEL` | Which model for small talk, ticks, logs and reminders | Default `claude-haiku-4-5` |
+   | `JARVIS_CACHE_TTL` | How long the prompt stays cached: `1h` survives the gaps between chats, `5m` is Anthropic's default | Default `1h` |
    | `JARVIS_ROUTING` | `auto` routes by the rules in `brain.route`; `off` uses `JARVIS_MODEL` for everything | Default `auto` |
    | `ELEVENLABS_API_KEY` | Voice out (speech) and in (Scribe transcription) | elevenlabs.io → Profile → API Keys. Text-to-speech + speech-to-text permissions are enough |
    | `ELEVENLABS_VOICE_ID` | The voice JARVIS speaks in | elevenlabs.io → Voices → My Voices → ⋯ → Copy voice ID (20 characters). If it's wrong, JARVIS uses the built-in "George" voice and says so |

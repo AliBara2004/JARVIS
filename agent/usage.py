@@ -17,7 +17,7 @@ DAILY_BUDGET_USD = float(os.environ.get("JARVIS_DAILY_BUDGET", "2"))
 # $ per million tokens (Anthropic list prices). Cache reads bill at 0.1x input, cache writes at 1.25x.
 MODEL_PRICES = {"claude-opus-5": (5.0, 25.0), "claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5": (2.0, 10.0),
                 "claude-haiku-4-5": (1.0, 5.0), "claude-fable-5-1": (10.0, 50.0)}
-CACHE_READ, CACHE_WRITE = 0.1, 1.25
+CACHE_READ, CACHE_WRITE, CACHE_WRITE_1H = 0.1, 1.25, 2.0
 WEB_SEARCH_USD = 10.0 / 1000          # per search
 TTS_CREDITS_PER_CHAR = {"eleven_multilingual_v2": 1.0, "eleven_flash_v2_5": 0.5, "eleven_turbo_v2_5": 0.5}
 
@@ -61,7 +61,11 @@ def record_llm(model, u):
     inp, out = u.get("input_tokens") or 0, u.get("output_tokens") or 0
     cr, cw = u.get("cache_read_input_tokens") or 0, u.get("cache_creation_input_tokens") or 0
     searches = (u.get("server_tool_use") or {}).get("web_search_requests") or 0
-    usd = (inp * pin + out * pout + cr * pin * CACHE_READ + cw * pin * CACHE_WRITE) / 1e6 + searches * WEB_SEARCH_USD
+    split = u.get("cache_creation") or {}
+    cw1h = split.get("ephemeral_1h_input_tokens") or 0
+    cw5m = cw - cw1h if split else cw
+    usd = (inp * pin + out * pout + cr * pin * CACHE_READ + cw5m * pin * CACHE_WRITE + cw1h * pin * CACHE_WRITE_1H) / 1e6 \
+        + searches * WEB_SEARCH_USD
     _add(model=model, usd=usd, calls=1, input=inp, output=out, cache_read=cr, cache_write=cw, searches=searches)
 
 

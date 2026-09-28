@@ -42,7 +42,16 @@ HARD = re.compile(r"\b(research|look (it |this |that )?up|google|draft|script|ho
                   r"|pros and cons|trade-?offs?|think (hard|properly|carefully|it through)|use opus|properly)\b", re.I)
 LONG_WORDS = 40                  # a long message is usually a real problem, not chat
 STICKY_TURNS = 1                 # after a hard turn, the next turn stays strong ("make it shorter", "and the other one?")
-EASY = re.compile(r"^\s*(use (sonnet|the (cheap|fast) (one|model))|quick( one)?[:,])", re.I)
+EASY = re.compile(r"^\s*(use (sonnet|the fast (one|model)))", re.I)
+# The cheapest tier (Haiku): short, simple turns where judgement doesn't matter.
+CHEAP = re.compile(r"^\s*(quick( one)?[:,]|use haiku|use the cheap (one|model)"
+                   r"|(hi|hey|hiya|hello|morning|evening|afternoon|yo|sup)\b|good (morning|afternoon|evening|night)"
+                   r"|(thanks|thank you|cheers|nice one|ta|ok|okay|cool|great|nice|got it|sound|safe)\b[\s!.]*$"
+                   r"|(you there|can you hear me|are you (there|awake))"
+                   r"|(done|finished|did|ticked?|cross(ed)? off) (the |my )?\w+"
+                   r"|log (this|that|it)\b|log:|remind me\b|nudge me\b|cancel (the |my )?reminder"
+                   r"|what time is it|what'?s the time|what day is it)", re.I)
+CHEAP_MAX_WORDS = 14
 _route = {"strong_left": 0}
 
 
@@ -53,6 +62,9 @@ def route(text, attached=False):
     if EASY.search(text):
         _route["strong_left"] = 0
         return llm.FAST_MODEL
+    if not attached and CHEAP.search(text) and len(text.split()) <= CHEAP_MAX_WORDS and not HARD.search(text):
+        _route["strong_left"] = 0
+        return llm.CHEAP_MODEL
     if attached or HARD.search(text) or len(text.split()) > LONG_WORDS:
         _route["strong_left"] = STICKY_TURNS
         return llm.MODEL
@@ -62,13 +74,25 @@ def route(text, attached=False):
     return llm.FAST_MODEL
 
 
+def _without_thinking(m):
+    """A finished turn's assistant message minus its thinking blocks. Only the turn in progress keeps them
+    (tool use needs that); old ones would cost input tokens, and on models that bind thinking to the exact
+    conversation (Opus 5.5) any later change to history would invalidate them."""
+    if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+        return m
+    kept = [b for b in m["content"] if b.get("type") not in ("thinking", "redacted_thinking")]
+    return {**m, "content": kept or [{"type": "text", "text": "…"}]}
+
+
 def system_blocks():
     prompt = (data.ROOT / "agent" / "prompt.md").read_text(encoding="utf-8")
     who = data.ROOT / "CLAUDE.md"
     text = prompt + ("\n\n# About Ali (CLAUDE.md)\n\n" + who.read_text(encoding="utf-8") if who.exists() else "")
     text += memory.prompt_block()
-    text += vault_map()
-    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+    # The stable part is cached (tools + this); the vault map, which changes whenever a note does, comes
+    # after the cache mark so a new note doesn't throw away ~10k cached tokens.
+    return [{"type": "text", "text": text, "cache_control": llm.cache_mark()},
+            {"type": "text", "text": vault_map()}]
 
 
 def vault_map():
@@ -248,7 +272,7 @@ def _model_turn(text, emit, readonly=False, attachments=None, spoken=False):
         user = {"role": "user", "content": files + [{"type": "text", "text": f"{stamp}\n{about}\n{text}"}]}
     else:
         user = {"role": "user", "content": f"{stamp}\n{text}"}
-    msgs = [m for turn in _history for m in turn] + [user]
+    msgs = [_without_thinking(m) for turn in _history for m in turn] + [user]
     model = route(text, attached=bool(files))
     # An attachment is untrusted like an email: writes then need Ali's own words asking for them.
     turn, cards, notes, used, written = [user], [], [], ["attachment"] if files else [], []
@@ -350,7 +374,7 @@ def _model_turn(text, emit, readonly=False, attachments=None, spoken=False):
 
     if files:
         # Keep the reply about the file, not the file: otherwise it's re-sent (and billed) every later
-        # turn. Fine on claude-opus-5; models with preserved thinking would need this left untouched.
+        # turn. Safe with preserved-thinking models because finished turns are sent without thinking.
         turn[0] = {"role": "user", "content": f"{stamp}\n[Ali attached {', '.join(names)}; your reply below is "
                                               f"what you read in it. The file itself is no longer here.]\n{text}"}
     _history.append(turn)

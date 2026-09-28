@@ -348,14 +348,24 @@ check("Reminders can't be set from a forwarded message", "set_reminder" in tools
 print("\nModel routing")
 if llm.ROUTING != "off" and llm.FAST_MODEL != llm.MODEL:
     brain.reset()
-    check("Small talk goes to the cheap model", brain.route("morning, how's it going") == llm.FAST_MODEL)
+    check("Small talk, ticks, logs and reminders go to the cheapest tier",
+          all(brain.route(t) == llm.CHEAP_MODEL for t in ("morning, how's it going", "cheers", "done the gym",
+                                                          "log this: green tea", "remind me at 3 to call Cobalt")))
+    check("Ordinary questions go to the everyday tier", brain.route("what's on my plate tomorrow?") == llm.FAST_MODEL)
     check("Research goes to the strong model", brain.route("research the best CRM for dentists") == llm.MODEL)
     check("The turn after a hard one stays strong", brain.route("make it shorter") == llm.MODEL
-          and brain.route("cheers") == llm.FAST_MODEL)
+          and brain.route("cheers") == llm.CHEAP_MODEL)
+    check("A long message is never sent to the cheapest tier",
+          brain.route("hey so I was thinking about the whole Cobalt thing and whether I should change the offer") != llm.CHEAP_MODEL)
     check("Attachments go to the strong model", brain.route("what's this?", attached=True) == llm.MODEL)
     brain.reset()
 else:
     print("  SKIP  routing is off")
+check("Finished turns go back without their thinking (tokens, and Opus 5.5's history check)",
+      brain._without_thinking({"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "x"},
+                                                              {"type": "text", "text": "hi"}]})["content"] == [{"type": "text", "text": "hi"}])
+check("The vault map sits after the cache mark", "cache_control" in brain.system_blocks()[0]
+      and "cache_control" not in brain.system_blocks()[-1] and "vault right now" in brain.system_blocks()[-1]["text"])
 hist = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
         {"role": "user", "content": "and?"}]
 marked = llm._cached(hist)
