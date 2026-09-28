@@ -30,14 +30,15 @@ CANCEL = re.compile(r"^\s*(no|nope|cancel|don'?t|stop|scrap that)\b[\s.!]*$", re
 ASKED_TO_KEEP = re.compile(r"\b(remember|notes?|save|write|jot|keep|store|log|don'?t forget|put (it|that|this)"
                            r"|add|mark|move|set|filmed|posted|replied|edit|change|update|fix|replace|remove|tidy|rewrite|undo"
                            r"|goals?|tick|cross|done|finished|did|today|trained|workout|gym|ran|lifted"
-                           r"|remind|reminder|nudge|ping|alert|cancel)\b", re.I)
+                           r"|remind|reminder|nudge|ping|alert|cancel"
+                           r"|file|ingest|wiki|clip|read later|health check|lint|clean up)\b", re.I)
 
 
 # Turns that go to the strong model (llm.MODEL); everything else goes to llm.FAST_MODEL.
 # Rules, not a classifier call: a classifier would add a round trip before JARVIS can speak.
 HARD = re.compile(r"\b(research|look (it |this |that )?up|google|draft|script|hooks?|rewrite|edit|write (me )?(an? )?"
                   r"(email|reply|message|post|caption|note)|weekly review|review (the|my|this) week|plan (my|the|out)"
-                  r"|prospects?|niches?|clients?|outreach|chase|follow ?up|leads?|offer|pricing|strategy|analy[sz]e|compare|explain|why|should i"
+                  r"|prospects?|niches?|clients?|outreach|chase|follow ?up|leads?|file (this|that|it)|ingest|to (the|my) wiki|offer|pricing|strategy|analy[sz]e|compare|explain|why|should i"
                   r"|pros and cons|trade-?offs?|think (hard|properly|carefully|it through)|use opus|properly)\b", re.I)
 LONG_WORDS = 40                  # a long message is usually a real problem, not chat
 STICKY_TURNS = 1                 # after a hard turn, the next turn stays strong ("make it shorter", "and the other one?")
@@ -66,7 +67,21 @@ def system_blocks():
     who = data.ROOT / "CLAUDE.md"
     text = prompt + ("\n\n# About Ali (CLAUDE.md)\n\n" + who.read_text(encoding="utf-8") if who.exists() else "")
     text += memory.prompt_block()
+    text += vault_map()
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
+def vault_map():
+    """MAP.md, generated: what's where in his vault, so you know where to look (and what the wiki holds)."""
+    v = vault.get()
+    folders = {}
+    for n in v.notes:
+        top = "/".join(n.rel.split("/")[:2]) if n.rel.startswith("JARVIS/") else n.rel.split("/")[0] if "/" in n.rel else "(top level)"
+        folders[top] = folders.get(top, 0) + 1
+    lines = [f"- {f}: {c} note{'s' if c != 1 else ''}" for f, c in sorted(folders.items())]
+    pages = [n.title for n in v.notes if n.type == "wiki"]
+    wiki_line = (f"\nWiki pages ({len(pages)}): " + ", ".join(sorted(pages)[:60])) if pages else "\nThe wiki is empty so far."
+    return "\n\n# His vault right now (generated map)\n\n" + "\n".join(lines) + wiki_line
 
 
 def _write_blocked(name, text, used):

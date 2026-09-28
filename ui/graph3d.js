@@ -37,7 +37,7 @@ const Graph3D = (() => {
     tool: '#d8b4fe', offer: '#c084fc', prospect: '#a78bfa', niche: '#818cf8',
     workflow: '#67e8f9', tech: '#7dd3fc', person: '#f0abfc', meeting: '#fda4af',
     idea: '#f5d0fe', daily: '#6f5a92', hub: '#ffffff', topic: '#a5b4fc',
-    video: '#ff6ad5', content: '#ff9bd2', script: '#ff85c8', journal: '#b794f6', note: '#e9d5ff', workout: '#f0abfc',
+    video: '#ff6ad5', content: '#ff9bd2', script: '#ff85c8', journal: '#b794f6', note: '#e9d5ff', wiki: '#c4b5fd', source: '#9d8cc9', log: '#7c6a9e', 'wiki-index': '#ffffff', 'wiki-log': '#6f5a92', workout: '#f0abfc',
   };
   // Three looks. Violet is JARVIS's own and the default; amber is the Stark workshop, cyan the lab.
   const THEMES = {

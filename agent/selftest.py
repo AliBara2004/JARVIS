@@ -282,6 +282,37 @@ check("No markdown, links or emoji reach the voice",
 check("The local voice pack stays in local/ and is gitignored",
       subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", "local/piper.zip"]).returncode == 0)
 
+print("\nThe wiki")
+import wiki  # noqa: E402
+import tempfile as _tf  # noqa: E402
+_real_folders = data.folders
+_wroot = Path(_tf.mkdtemp())
+data.folders = lambda: [_wroot]
+try:
+    rel, _ = data.write_wiki("../../../escape", "x", {"type": "wiki"})
+    check("Wiki pages can't leave JARVIS/Wiki", (_wroot / rel).resolve().is_relative_to((_wroot / "JARVIS" / "Wiki").resolve()), rel)
+    try:
+        data.write_wiki("index", "x", {"type": "wiki"})
+        check("index and log are JARVIS's to maintain, not pages", False)
+    except RuntimeError:
+        check("index and log are JARVIS's to maintain, not pages", True)
+    try:
+        data.append_line("Daily", "x.md", "x")
+        check("Appending only reaches the wiki log and the daily log", False)
+    except RuntimeError:
+        check("Appending only reaches the wiki log and the daily log", True)
+finally:
+    data.folders = _real_folders
+for _u in ("http://127.0.0.1:7777/api/status", "http://192.168.1.1/", "file:///C:/Windows/win.ini"):
+    try:
+        wiki._public_url(_u)
+        check(f"Won't fetch {_u}", False)
+    except ValueError:
+        check(f"Won't fetch {_u}", True)
+check("Filing from the web needs Ali's own words", "ingest_source" in tools.UNTRUSTED_SOURCES and "wiki_write" in tools.WRITES
+      and brain._write_blocked("wiki_write", "what does this article say?", ["ingest_source"])
+      and not brain._write_blocked("wiki_write", "file this article", ["ingest_source"]))
+
 print("\nReminders")
 import datetime as _dt  # noqa: E402
 import tempfile  # noqa: E402

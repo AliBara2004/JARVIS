@@ -212,7 +212,7 @@ def create_event(title, start, minutes, notes=""):
 # write_note() creates a NEW markdown file under <vault>/JARVIS/<folder>/. It opens with mode "x",
 # so it can never overwrite, and there is no edit or delete anywhere in this module.
 NOTES_SUBDIR = "JARVIS"
-NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes", "Video ideas", "Prospects", "Workouts")
+NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes", "Video ideas", "Prospects", "Workouts", "Sources")
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f\[\]#^]')
 
 
@@ -346,3 +346,64 @@ def save_goals(old_text, new_text):
     tmp.write_bytes(new_text.encode("utf-8"))
     os.replace(tmp, p)
     return daily_rel(day)
+
+
+# ---------------------------------------------------------------- the LLM wiki (JARVIS/Wiki) and the daily log (JARVIS/Log)
+# JARVIS owns these two folders outright: it may rewrite wiki pages and append to logs. Nothing here can
+# reach Ali's own notes, and sources (JARVIS/Sources, via write_note) are new files only, never changed.
+WIKI_DIR = "Wiki"
+LOG_DIR = "Log"
+WIKI_RESERVED = {"index", "log"}
+
+
+def _jarvis_path(sub, name):
+    root = vault_root()
+    if root is None:
+        raise RuntimeError("No vault folder set. Put your Obsidian vault path in JARVIS_FOLDERS in .env.")
+    base = root / NOTES_SUBDIR / sub
+    p = (base / name).resolve()
+    if base.resolve() not in p.parents:
+        raise RuntimeError(f"Refusing to write outside JARVIS/{sub}.")
+    return root, base, p
+
+
+def wiki_page_name(title):
+    return _UNSAFE.sub("", str(title)).strip(" .")[:80]
+
+
+def write_wiki(title, body, meta):
+    """Create or replace one wiki page (JARVIS/Wiki/<title>.md). Atomic; can't touch index/log or leave the folder."""
+    name = wiki_page_name(title)
+    if not name or name.lower() in WIKI_RESERVED:
+        raise RuntimeError("That page name is reserved or empty.")
+    root, base, p = _jarvis_path(WIKI_DIR, f"{name}.md")
+    base.mkdir(parents=True, exist_ok=True)
+    fm = "---\n" + "".join(f"{k}: {str(v).replace(chr(10), ' ')}\n" for k, v in meta.items()) + "---\n\n"
+    text = fm + f"# {name}\n\n" + body.strip() + "\n"
+    existed = p.exists()
+    tmp = p.with_name(p.name + ".jarvis-tmp")
+    tmp.write_bytes(text.encode("utf-8"))
+    os.replace(tmp, p)
+    return p.relative_to(root).as_posix(), existed
+
+
+def write_wiki_index(text):
+    root, base, p = _jarvis_path(WIKI_DIR, "index.md")
+    base.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".jarvis-tmp")
+    tmp.write_bytes(text.encode("utf-8"))
+    os.replace(tmp, p)
+    return p.relative_to(root).as_posix()
+
+
+def append_line(sub, name, line, header=""):
+    """Append one line to JARVIS/Wiki/log.md or JARVIS/Log/<day>.md (created with `header` if new)."""
+    if sub not in (WIKI_DIR, LOG_DIR):
+        raise RuntimeError("Appending is only for the wiki log and the daily log.")
+    root, base, p = _jarvis_path(sub, name)
+    base.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8", newline="\n") as f:
+        if f.tell() == 0 and header:
+            f.write(header)
+        f.write(line.replace("\n", " ").rstrip() + "\n")
+    return p.relative_to(root).as_posix()

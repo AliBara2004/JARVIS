@@ -61,6 +61,7 @@ class Vault:
             n.mtime = mtime
             self.notes.append(n)
             by_title.setdefault(title.lower(), n.id)
+            by_title.setdefault(path.stem.lower(), n.id)      # Obsidian links by filename, e.g. "2026-09-28 Title"
             for alias in meta.get("aliases", "").split(","):
                 if alias.strip():
                     by_title.setdefault(alias.strip().lower(), n.id)

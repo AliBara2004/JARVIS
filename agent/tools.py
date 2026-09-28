@@ -28,6 +28,7 @@ import memory
 import status
 import usage
 import vault
+import wiki
 
 WEB_SEARCH = os.environ.get("JARVIS_WEB_SEARCH", "ask")   # ask | auto | off
 PENDING_TTL = 15 * 60
@@ -458,7 +459,7 @@ def draft_script(title, hook, beats, cta="", length_s=60, notes=""):
 
 # ------------------------------------------------------------------ write_note
 NOTE_TYPES = {"Scripts": "script", "Ideas": "idea", "Journal": "journal", "Notes": "note", "Video ideas": "video",
-              "Prospects": "prospect", "Workouts": "workout"}
+              "Prospects": "prospect", "Workouts": "workout", "Sources": "source"}
 
 
 def write_note(title, body, folder="Notes", links=None):
@@ -773,6 +774,105 @@ def outreach_plan(count=3):
                           "ask (a free 15-minute look at their setup). No hype, no 'I hope this finds you well', never "
                           "invent facts about them. Follow-ups: 50-70 words, refer to the first email, one question."},
                   [n.id for n in leads] + [n.id for n, _ in chase])
+
+
+# ------------------------------------------------------------------ the wiki: ingest, write, health check (+ the daily log)
+def ingest_source(url="", text="", title="", why=""):
+    """Store a source untouched in JARVIS/Sources, then hand the model its text and the wiki catalogue."""
+    url, text = str(url or "").strip(), str(text or "").strip()
+    if url:
+        try:
+            got_title, text = wiki.fetch(url)
+        except Exception as e:
+            return result(f"I couldn't read that link: {e}", [card("error", "Source not saved", foot=str(e))], {"error": str(e)})
+        title = title or got_title
+    if not text:
+        return result("Give me a link, or the text to file.", [], {"error": "nothing to ingest"})
+    title = (title or text.split("\n", 1)[0])[:90].strip() or "Untitled source"
+    body = (f"Source: {url}\n\n" if url else "") + (f"Why it was saved: {why}\n\n" if why else "") + \
+           "## Text\n\n" + text[:wiki.MAX_SOURCE_CHARS] + ("\n\n(truncated)" if len(text) > wiki.MAX_SOURCE_CHARS else "")
+    meta = {"type": "source", "url": url, "captured": clock.uk_now().strftime("%Y-%m-%d %H:%M"), "source": "jarvis"}
+    try:
+        rel = data.write_note("Sources", title, body, meta)
+    except Exception as e:
+        return result(f"I couldn't save it: {e}", [], {"error": str(e)})
+    link = rel.rsplit("/", 1)[-1][:-3]                      # the filename: what [[links]] resolve to in Obsidian
+    wiki.log("ingest", f"[[{link}]]" + (f" ({url})" if url else ""))
+    v = vault.reload()
+    node = next((n.id for n in v.notes if n.rel == rel), None)
+    catalogue = [{"page": p["title"], "summary": p["summary"]} for p in wiki.pages()]
+    return result(f"Saved the source: {title}.",
+                  [card("saved", f"Source saved · {rel}", [{"text": title, "sub": url or "pasted text", "note": node, "tag": "source"}],
+                        foot="Kept exactly as it was; JARVIS never edits sources. Wiki pages come next.")],
+                  {"source_link": link, "title": title, "url": url, "chars": len(text),
+                   "untrusted_source_text": text[:wiki.MAX_EXCERPT], "truncated_for_you": len(text) > wiki.MAX_EXCERPT,
+                   "injection_warning": flag_injection(text), "wiki_catalogue": catalogue,
+                   "next": "Update or create the wiki pages this source feeds (wiki_write), each citing "
+                           f"[[{link}]]. Prefer updating an existing page over making a near-duplicate.",
+                   "graph_changed": True}, [node] if node is not None else [])
+
+
+def wiki_write(page, content, summary, sources=None):
+    srcs = [str(s).strip().strip("[]") for s in (sources or []) if str(s).strip()][:20]
+    existing = next((p for p in wiki.pages() if p["title"].lower() == data.wiki_page_name(page).lower()), None)
+    keep = existing["sources"] if existing else []
+    all_srcs = list(dict.fromkeys(keep + srcs))
+    now = clock.uk_now().strftime("%Y-%m-%d %H:%M")
+    created = next((n.meta.get("created") for n in V().notes if existing and n.rel == existing["rel"]), None) or now
+    meta = {"type": "wiki", "summary": " ".join(str(summary).split())[:200], "updated": now, "created": created,
+            "sources": "; ".join(all_srcs), "source": "jarvis"}
+    # the page's sources as real [[links]] at the end, so Obsidian's graph (and JARVIS's) connects them
+    body = re.split(r"\n#+\s*Sources\s*\n", "\n" + str(content).strip(), maxsplit=1)[0].strip()
+    if all_srcs:
+        body += "\n\n## Sources\n" + "\n".join(f"- [[{s}]]" for s in all_srcs)
+    try:
+        rel, existed = data.write_wiki(page, body, meta)
+    except Exception as e:
+        return result(f"I couldn't write that page: {e}", [], {"error": str(e)})
+    vault.reload()
+    data.write_wiki_index(wiki.index_text())
+    wiki.log("update" if existed else "new page", f"[[{data.wiki_page_name(page)}]] — {meta['summary']}")
+    v = vault.reload()
+    node = next((n.id for n in v.notes if n.rel == rel), None)
+    verb = "Updated" if existed else "Added"
+    return result(f"{verb} the wiki page {data.wiki_page_name(page)}.",
+                  [card("saved", f"Wiki · {verb.lower()} {data.wiki_page_name(page)}",
+                        [{"text": data.wiki_page_name(page), "sub": meta["summary"], "note": node, "tag": "wiki"}],
+                        foot=f"{rel} · {len(all_srcs)} source(s) · index.md and log.md updated")],
+                  {"wiki": f"{verb.lower()} {data.wiki_page_name(page)}", "rel": rel, "graph_changed": True},
+                  [node] if node is not None else [])
+
+
+def wiki_lint():
+    r = wiki.lint()
+    wiki.log("health check", f"{r['pages']} pages · {len(r['orphans'])} orphans · {len(r['broken_links'])} broken links · "
+                             f"{len(r['unsourced'])} unsourced · {len(r['stale'])} stale")
+    rows = ([{"text": f"Orphan: {t}", "sub": "no other page links here", "tag": "orphan"} for t in r["orphans"]] +
+            [{"text": f"Broken link in {b['page']}", "sub": f"[[{b['link']}]] doesn't exist", "tag": "link"} for b in r["broken_links"]] +
+            [{"text": f"No sources: {t}", "tag": "source"} for t in r["unsourced"]] +
+            [{"text": f"Stale: {t}", "sub": f"not updated in {wiki.STALE_DAYS}+ days", "tag": "old"} for t in r["stale"]])
+    n = lambda k, word: f"{k} {word}{'' if k == 1 else 's'}"
+    say = (f"{n(r['pages'], 'page')}, {n(r['sources'], 'source')}. " +
+           (f"{n(len(rows), 'thing')} to tidy." if rows else "Nothing to fix.")) if r["pages"] else "The wiki is empty so far."
+    return result(say, [card("plan", "Wiki health check", rows or [{"text": "All clear"}],
+                             foot="Contradictions need reading: ask me to check the pages on a topic against each other.")],
+                  {**r, "next": "Fix what you can with wiki_write: link orphans from related pages, repair or remove broken "
+                                "links, and for contradictions read the pages involved (search_brain) and reconcile them, "
+                                "saying which source you trusted and why."})
+
+
+def log_entry(text, kind="note"):
+    """Quick capture: one line in today's log (JARVIS/Log/YYYY-MM-DD.md)."""
+    text = " ".join(str(text).split())[:500]
+    if not text:
+        return result("What should I log?", [], {"error": "empty"})
+    day = clock.uk_today().isoformat()
+    kind = " ".join(str(kind or "note").split())[:24].lower()
+    header = f"---\ntype: log\ndate: {day}\nsource: jarvis\n---\n\n# Log · {day}\n\n"
+    rel = data.append_line(data.LOG_DIR, f"{day}.md", f"- {clock.uk_now().strftime('%H:%M')} · {kind} · {text}", header)
+    vault.reload()
+    return result(f"Logged: {text}.", [card("saved", f"Logged · {kind}", [{"text": text, "sub": rel, "tag": kind}])],
+                  {"logged": text, "rel": rel, "graph_changed": True})
 
 
 # ------------------------------------------------------------------ market_brief (pre-session)
@@ -1513,6 +1613,34 @@ SPECS = [
                     "on each and his offer. Then write each email with draft_message (prospect = company). Use when he "
                     "wants to do outreach, follow-ups, or 'email my leads'.",
      "input_schema": {"type": "object", "properties": {"count": {"type": "integer", "description": "Fresh leads to include, default 3"}}}},
+    {"name": "ingest_source",
+     "description": "File something into Ali's wiki: a link (article, PDF) or pasted/attached text. Saves the source "
+                    "untouched in JARVIS/Sources and returns its text plus the wiki catalogue; then write or update the "
+                    "wiki pages it feeds with wiki_write. Use when he says file this, save this article, add this to the "
+                    "wiki, read later.",
+     "input_schema": {"type": "object", "properties": {
+         "url": {"type": "string"}, "text": {"type": "string", "description": "If there's no link: the text to file"},
+         "title": {"type": "string"}, "why": {"type": "string", "description": "What he said about why it matters"}}}},
+    {"name": "wiki_write",
+     "description": "Create or rewrite one page of Ali's wiki (JARVIS/Wiki). Write the whole page: a clear summary up "
+                    "top, then the substance, [[links]] to related pages and to the sources it rests on. Keep his own "
+                    "words and numbers exact. Updating an existing page: include what was there that still holds.",
+     "input_schema": {"type": "object", "properties": {
+         "page": {"type": "string", "description": "Page title: a topic, tool, person or comparison"},
+         "content": {"type": "string", "description": "Markdown body (no front matter, no title line)"},
+         "summary": {"type": "string", "description": "One line for the index"},
+         "sources": {"type": "array", "items": {"type": "string"}, "description": "Source note names this page rests on"}},
+         "required": ["page", "content", "summary"]}},
+    {"name": "wiki_lint",
+     "description": "Health-check the wiki: orphan pages, broken links, pages without sources, stale pages. Then fix "
+                    "what you can with wiki_write.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "log_entry",
+     "description": "Quick capture into today's log (JARVIS/Log): something he did, ate, noticed, decided, a photo he "
+                    "sent with 'log this'. One line, his words. Not for goals, workouts or reminders (they have tools).",
+     "input_schema": {"type": "object", "properties": {
+         "text": {"type": "string"}, "kind": {"type": "string", "description": "One word: food, health, idea, work, trade, mood…"}},
+         "required": ["text"]}},
     {"name": "remember",
      "description": "Store one fact about Ali in JARVIS's memory, loaded into every future conversation. Use when he "
                     "asks you to remember something, or tells you something about himself that will still matter in "
@@ -1553,14 +1681,16 @@ FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox
          "edit_note": edit_note, "undo_last_edit": undo_last_edit, "list_goals": list_goals,
          "add_goals": add_goals, "tick_goal": tick_goal, "log_workout": log_workout,
          "workout_stats": workout_stats, "set_reminder": set_reminder, "list_reminders": list_reminders,
-         "cancel_reminder": cancel_reminder, "outreach_plan": outreach_plan}
+         "cancel_reminder": cancel_reminder, "outreach_plan": outreach_plan,
+         "ingest_source": ingest_source, "wiki_write": wiki_write, "wiki_lint": wiki_lint, "log_entry": log_entry}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches", "find_prospects",
-                     "weekly_review", "attachment"}
+                     "weekly_review", "attachment", "ingest_source", "wiki_lint"}
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
 WRITES = {"remember", "write_note", "set_status", "add_prospect", "edit_note", "undo_last_edit", "add_goals",
-          "tick_goal", "log_workout", "set_reminder", "cancel_reminder"}
+          "tick_goal", "log_workout", "set_reminder", "cancel_reminder",
+          "ingest_source", "wiki_write", "log_entry"}
 
 
 def run(name, args):
