@@ -39,6 +39,7 @@ KOKORO_VOICE = os.environ.get("JARVIS_KOKORO_VOICE", "bm_lewis")     # Ali's pic
 KOKORO_SPEED = float(os.environ.get("JARVIS_KOKORO_SPEED", "1.12"))
 KOKORO_FILES = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 KOKORO_PACKAGE = "kokoro-onnx==0.6.1"
+AUDIO_PACKAGE = "soundfile==0.14.0"      # audio conversions (Telegram voice notes are OGG/Opus)
 
 HF_VOICES = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB"
 DOWNLOADS = [   # (url, saved as, expected size or None)
@@ -132,6 +133,18 @@ class _Helper:
 
 
 _kokoro = _Helper()
+
+
+def convert(audio, mode):
+    """wav16k: any audio → 16 kHz mono WAV (for whisper). opus: WAV → OGG/Opus (Telegram voice notes)."""
+    py = kokoro_python()
+    if not py:
+        raise RuntimeError("Local voice pack isn't installed. Run: python agent/localvoice.py setup")
+    r = subprocess.run([str(py), str(data.ROOT / "agent" / "audio_helper.py"), mode], input=audio, capture_output=True,
+                       timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if r.returncode != 0 or not r.stdout:
+        raise RuntimeError(f"Audio conversion failed: {r.stderr.decode(errors='ignore')[-200:]}")
+    return r.stdout
 
 
 def warm():
@@ -301,8 +314,8 @@ def setup():
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
     # truststore: use Windows' certificates (Norton inspects HTTPS with its own, which pip otherwise rejects)
     subprocess.run([str(venv / "Scripts" / "python.exe"), "-m", "pip", "install", "-q", "--disable-pip-version-check",
-                    "--use-feature=truststore", KOKORO_PACKAGE], check=True)
-    sums.append(f"pip  {KOKORO_PACKAGE}  (into local/kokoro/venv)")
+                    "--use-feature=truststore", KOKORO_PACKAGE, AUDIO_PACKAGE], check=True)
+    sums.append(f"pip  {KOKORO_PACKAGE} {AUDIO_PACKAGE}  (into local/kokoro/venv)")
     (LOCAL / "SOURCES.txt").write_text("\n".join(sums) + "\n", encoding="utf-8")
     print("\n".join("  " + s for s in sums))
     print("installed:", available())

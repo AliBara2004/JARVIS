@@ -23,3 +23,7 @@ data/checkin.tmp
 data/reminders.json
 data/reminders.tmp
 local/
+data/conversation.json
+data/conversation.tmp
+data/video_stats.json
+data/video_stats.tmp

@@ -36,6 +36,39 @@ def record(rel, stage, note=""):
         os.replace(tmp, FILE)
 
 
+VIDEO_FILE = data.ROOT / "data" / "video_stats.json"        # TikTok numbers Ali reports; gitignored
+
+
+def _videos():
+    try:
+        return json.loads(VIDEO_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def record_video(key, title, stats):
+    """One snapshot of a video's numbers (views, likes, comments, shares, saves), kept per video."""
+    with _lock:
+        db = _videos()
+        v = db.setdefault(key, {"title": title, "snapshots": []})
+        v["title"] = title
+        v["snapshots"].append({"at": time.time(), **stats})
+        VIDEO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = VIDEO_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(db, indent=1), encoding="utf-8")
+        os.replace(tmp, VIDEO_FILE)
+    return v
+
+
+def videos():
+    """{key: {title, latest, first, snapshots}} with the latest numbers per video."""
+    out = {}
+    for k, v in _videos().items():
+        if v.get("snapshots"):
+            out[k] = {**v, "latest": v["snapshots"][-1], "first": v["snapshots"][0]}
+    return out
+
+
 def history(rel):
     return _load().get(rel, [])
 

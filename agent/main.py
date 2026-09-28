@@ -6,6 +6,7 @@ Binds to localhost only. API keys stay in this process; the browser only ever
 sees whether a key is present. POSTs need a custom header and a local
 Origin/Host, so other websites open in the same browser can't drive JARVIS.
 """
+import datetime as dt
 import hashlib
 import html
 import json
@@ -28,6 +29,8 @@ import google
 import telegram
 import llm
 import memory
+import capture
+import clock
 import reminders
 import tools
 import usage
@@ -246,6 +249,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(vault.get().note_json(int(q.get("id", ""))))
             except (ValueError, IndexError):
                 return self._json({"error": "no such note"}, 404)
+        if u.path == "/api/capture":                   # the latest screenshot, for the page's attachment tray
+            return self._json({"capture": capture.latest()})
         if u.path == "/api/widgets":
             return self._json(tools.widgets())
         if u.path == "/api/memory":
@@ -331,6 +336,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._stream_ask(str(body.get("text", ""))[:4000], ids, bool(body.get("spoken")))
         if path == "/api/confirm":
             return self._json(brain.confirm(str(body.get("id", "")), bool(body.get("ok"))))
+        if path == "/api/capture":
+            try:
+                return self._json({"capture": capture.grab()})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
         if path == "/api/reminders/seen":
             reminders.seen([str(i) for i in body.get("ids") or []][:50])
             return self._json({"ok": True})
@@ -366,6 +376,50 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
 
+PREP_MINUTES = 10
+
+
+def watch_meetings():
+    """Ten minutes before a calendar event with one of his prospects: a prep brief on Telegram and the page."""
+    cache = {"at": 0.0, "events": []}
+    while True:
+        try:
+            if time.time() - cache["at"] > 300:          # the calendar is read at most every 5 minutes
+                cache.update(at=time.time(), events=data.calendar(clock.uk_today(), 1))
+            now = clock.uk_now().replace(tzinfo=None)
+            for e in cache["events"]:
+                if e.get("all_day"):
+                    continue
+                start = dt.datetime.strptime(e["start"][:16], "%Y-%m-%dT%H:%M")
+                mins = (start - now).total_seconds() / 60
+                if 0 < mins <= PREP_MINUTES + 1:
+                    n = tools._prospect_for(e["title"])
+                    if n:
+                        reminders.raise_alert(tools.meeting_alert_text(e, n), f"prep-{e['start']}-{n.title}", telegram.notify)
+        except Exception:
+            pass
+        time.sleep(60)
+
+
+def watch_hotkey():
+    """Ctrl+Alt+J anywhere in Windows: screenshot the screen and attach it to the next question."""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, WM_HOTKEY = 0x1, 0x2, 0x4000, 0x0312
+    if not user32.RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord("J")):
+        return                                           # something else owns Ctrl+Alt+J; the 📸 button still works
+    msg = wintypes.MSG()
+    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        if msg.message == WM_HOTKEY:
+            try:
+                capture.grab()
+            except Exception:
+                pass
+
+
 def watch_vault():
     """Rebuild the index when notes change on disk, so Obsidian edits reach JARVIS without a restart."""
     sig = data.signature()
@@ -392,6 +446,8 @@ def main():
     telegram.start()
     reminders.start(notify=telegram.notify)
     threading.Thread(target=voice.localvoice.warm, daemon=True).start()   # Kokoro loaded before the first reply
+    threading.Thread(target=watch_meetings, daemon=True).start()
+    threading.Thread(target=watch_hotkey, daemon=True).start()
     backup.start()
     srv = Server((HOST, PORT), Handler)
     SERVER["srv"] = srv

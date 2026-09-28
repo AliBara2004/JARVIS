@@ -4,8 +4,10 @@ When the model is unreachable, JARVIS still routes between conversation and
 search by scoring the question against the files, and every reply says so.
 """
 import json
+import os
 import re
 import threading
+import time
 
 import attach
 import clock
@@ -20,6 +22,8 @@ MAX_TOOL_ROUNDS = 6
 SEARCH_MIN_SCORE = 2.5          # BM25 score below which a question isn't "about the files"
 
 _history = []                    # list of turns; a turn is the list of messages it produced
+CONVO_FILE = data.ROOT / "data" / "conversation.json"      # survives restarts; gitignored
+CONVO_MAX_AGE = 24 * 3600        # an older conversation isn't picked back up: the topic has moved on
 _lock = threading.Lock()
 
 CONFIRM = re.compile(r"^\s*(yes|yep|yeah|confirm(ed)?|do it|go ahead|book it|add it|search it|go)\b[\s.!]*$", re.I)
@@ -143,9 +147,33 @@ def _said(reply, phrase):
     return sum(w in r for w in key) / len(key) >= READBACK_OVERLAP
 
 
+def _save_history():
+    """The last HISTORY_TURNS turns, so a restart (every code update) doesn't lose the thread."""
+    try:
+        CONVO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CONVO_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"saved": time.time(), "turns": _history}, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, CONVO_FILE)
+    except OSError:
+        pass                                  # continuity is a nicety; never fail a reply over it
+
+
+def _load_history():
+    try:
+        d = json.loads(CONVO_FILE.read_text(encoding="utf-8"))
+        if time.time() - d.get("saved", 0) < CONVO_MAX_AGE:
+            _history[:] = d.get("turns", [])[-HISTORY_TURNS:]
+    except (OSError, ValueError):
+        pass
+
+
+_load_history()
+
+
 def reset():
     with _lock:
         _history.clear()
+        _save_history()
         _route["strong_left"] = 0
 
 
@@ -240,6 +268,7 @@ def ask_checkin():
             {"role": "assistant", "content": [{"type": "text", "text": q}]},
         ])
         del _history[:-HISTORY_TURNS]
+        _save_history()
     return q
 
 
@@ -254,6 +283,7 @@ def _resolve(pid, ok):
         {"role": "assistant", "content": [{"type": "text", "text": res["say"] + (f"\n\n(Result: {detail})" if detail else "")}]},
     ])
     del _history[:-HISTORY_TURNS]
+    _save_history()
     return _pack(res, "direct")
 
 
@@ -379,6 +409,7 @@ def _model_turn(text, emit, readonly=False, attachments=None, spoken=False):
                                               f"what you read in it. The file itself is no longer here.]\n{text}"}
     _history.append(turn)
     del _history[:-HISTORY_TURNS]
+    _save_history()
     return {"reply": reply, "cards": cards, "notes": notes, "mode": "model", "tools": [u for u in used if u != "attachment"],
             "pending": tools.pending_list(), "graph_changed": changed, "model": model}
 

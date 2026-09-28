@@ -212,7 +212,7 @@ def create_event(title, start, minutes, notes=""):
 # write_note() creates a NEW markdown file under <vault>/JARVIS/<folder>/. It opens with mode "x",
 # so it can never overwrite, and there is no edit or delete anywhere in this module.
 NOTES_SUBDIR = "JARVIS"
-NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes", "Video ideas", "Prospects", "Workouts", "Sources")
+NOTE_FOLDERS = ("Scripts", "Ideas", "Journal", "Notes", "Video ideas", "Prospects", "Workouts", "Sources", "Proposals")
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f\[\]#^]')
 
 

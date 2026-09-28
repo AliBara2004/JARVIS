@@ -78,9 +78,11 @@ def listen(audio, mime="audio/webm"):
             if not local:
                 raise
             _out["stt"] = time.time()
-            if not wav:
-                raise                      # the page resends this turn as WAV
+            if not wav and not localvoice.kokoro_python():
+                raise                      # no converter: the page resends this turn as WAV
     try:
+        if not wav:
+            audio = localvoice.convert(audio, "wav16k")    # e.g. a Telegram voice note (OGG/Opus)
         return localvoice.stt(audio), "local"
     except Exception as e:
         raise VoiceError(f"Local transcription failed: {e}")

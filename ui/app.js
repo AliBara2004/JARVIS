@@ -481,6 +481,7 @@ function renderCard(c) {
     if (a.id === 'google-connect') return `<button class="btn primary" data-action="google">Connect Google</button>`;
     if (a.id === 'telegram-unpair') return `<button class="btn" data-action="telegram-unpair">Unpair</button>`;
     if (a.id === 'checkin-answer') return `<button class="btn primary" data-action="checkin-answer">Answer</button>`;
+    if (a.id === 'setup') return `<button class="btn primary" data-action="setup">${esc(a.label)}</button>`;
     if (a.id === 'checkin-skip') return `<button class="btn" data-action="checkin-skip">Not tonight</button>`;
     return `<button class="btn ${a.style === 'primary' ? 'primary' : ''}" data-action="${a.style === 'cancel' ? 'cancel' : 'confirm'}" data-pid="${esc(a.id)}">${esc(a.label)}</button>`;
   }).join('');
@@ -516,6 +517,26 @@ async function addFiles(list) {
   $('#q').focus();
 }
 
+// Screenshots: the 📸 button (3-second countdown so you can switch windows) or Ctrl+Alt+J anywhere in Windows.
+const shownCaptures = new Set();
+function takeCapture(att) {
+  if (!att || shownCaptures.has(att.id)) return;
+  shownCaptures.add(att.id);
+  Attach.items.push(att);
+  renderTray();
+  caption('Screenshot attached. Ask about it.', 'live');
+  $('#q').focus();
+  uiTick();
+}
+async function screenshotSoon() {
+  for (const n of [3, 2, 1]) { caption(`Screenshot in ${n}… switch to what you want me to see`, 'live'); await new Promise(r => setTimeout(r, 1000)); }
+  try { takeCapture((await post('/api/capture')).capture); } catch (e) { banner(`Screenshot failed: ${e.message}`); }
+}
+setInterval(async () => {
+  if (document.hidden) return;
+  try { takeCapture((await api('/api/capture')).capture); } catch { /* server restarting */ }
+}, 2000);
+
 function renderTray() {
   const t = $('#tray');
   t.innerHTML = Attach.items.map(a =>
@@ -526,6 +547,7 @@ function renderTray() {
 
 function bindAttachments() {
   $('#clip').addEventListener('click', () => $('#file').click());
+  $('#shot').addEventListener('click', screenshotSoon);
   $('#file').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
   $('#tray').addEventListener('click', e => {
     const id = e.target.dataset?.rm;
@@ -622,13 +644,14 @@ async function showMemory() {
   const ex = addExchange('Memory', true);
   fillExchange(ex, {
     reply: facts.length ? `${facts.length} thing${facts.length > 1 ? 's' : ''} I remember about you.`
-                        : "Nothing yet. Say \"remember that…\" and I'll keep it.",
+                        : "Nothing yet. Say \"remember that…\", or let me interview you.",
     mode: 'direct',
-    cards: facts.length ? [{
-      kind: 'memory', title: 'Memory · newest last', actions: [],
-      rows: facts.map(f => ({ text: f.fact, meta: f.date, tag: f.topic, sub: `memory/${f.file}` })),
+    cards: [{
+      kind: 'memory', title: facts.length ? 'Memory · newest last' : 'Memory', actions: [{ id: 'setup', label: 'Set me up' }],
+      rows: facts.length ? facts.map(f => ({ text: f.fact, meta: f.date, tag: f.topic, sub: `memory/${f.file}` }))
+                         : [{ text: 'A few quick questions: your trading rule blanks, what I should remember, and leads to work.' }],
       foot: 'One fact per file in jarvis/memory/. JARVIS never edits or deletes these; delete a file yourself to make it forget.',
-    }] : [],
+    }],
   });
 }
 
@@ -1308,6 +1331,7 @@ function bindUI() {
         return;
       }
       if (a === 'google') return window.open('/oauth/start', '_blank', 'noopener');
+      if (a === 'setup') return ask("Set me up: interview me about what you're missing.", { speak: Voice.on && !Voice.muted });
       if (a === 'checkin-answer' || a === 'checkin-skip') return answerCheckin(a === 'checkin-answer', act);
       if (a === 'telegram-unpair') {
         await post('/api/telegram/unpair'); act.textContent = 'Unpaired'; act.disabled = true; return refreshStatus();

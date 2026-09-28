@@ -312,6 +312,10 @@ def brief_me(day=""):
 
     if today.weekday() < 5:
         facts["ny_open_uk"] = clock.ny_open_uk(today).strftime("%H:%M")
+        if today == now:                           # worked out here, so the model never does time arithmetic
+            mins = round((clock.ny_open_uk(today) - clock.uk_now().replace(tzinfo=None)).total_seconds() / 60)
+            span = lambda m: f"{m} minutes" if m < 90 else f"{m / 60:.1f} hours"
+            facts["ny_open_is"] = f"in {span(mins)}" if mins > 0 else f"{span(-mins)} ago (session under way)" if mins > -390 else "closed for today"
         try:
             reds = [e for e in _key_events(market.calendar(today)) if e["impact"] == "High"]
             facts["red_folders"] = [f"{e['time']} {e['currency']} {e['title']}" for e in reds]
@@ -459,7 +463,7 @@ def draft_script(title, hook, beats, cta="", length_s=60, notes=""):
 
 # ------------------------------------------------------------------ write_note
 NOTE_TYPES = {"Scripts": "script", "Ideas": "idea", "Journal": "journal", "Notes": "note", "Video ideas": "video",
-              "Prospects": "prospect", "Workouts": "workout", "Sources": "source"}
+              "Prospects": "prospect", "Workouts": "workout", "Sources": "source", "Proposals": "proposal"}
 
 
 def write_note(title, body, folder="Notes", links=None):
@@ -873,6 +877,245 @@ def log_entry(text, kind="note"):
     vault.reload()
     return result(f"Logged: {text}.", [card("saved", f"Logged · {kind}", [{"text": text, "sub": rel, "tag": kind}])],
                   {"logged": text, "rel": rel, "graph_changed": True})
+
+
+# ------------------------------------------------------------------ setting him up: what JARVIS still doesn't know
+_BLANK = re.compile(r"_{3,}"                                  # "No trading ___ minutes"
+                    r"|:\s*\$?\s*$"                           # "Daily loss limit: $" / "Setups I'm allowed to take:"
+                    r"|\[\[\s*\]\]"                           # "Contact: [[ ]]"
+                    r"|:\s*\((say|fill|add|put|write)[^)]*\)\s*$", re.I)
+
+
+def setup_gaps():
+    """The blanks in his own notes, how much JARVIS remembers about him, and whether there are leads to work."""
+    blanks = []
+    for n in V().notes:
+        if n.rel.startswith(("JARVIS/", "Templates/", "Daily/")) or n.rel.endswith("Start here.md") or n.type == "daily":
+            continue                                          # daily notes are journal prompts, not missing facts
+        for line in n.text.splitlines():
+            if re.match(r"^\s*-\s*\d{4}-\d{2}-\d{2}:\s*$", line):
+                continue                                      # an empty dated bullet is room to write, not a blank
+            if _BLANK.search(line) and not line.lstrip().startswith("#"):
+                blanks.append({"note": n.title, "line": line.strip(), "id": n.id})
+    facts = memory.all_facts()
+    pipe = _pipeline()
+    leads = [n for n in pipe if _stage(n) == "lead"]
+    scored = [n for n in V().notes if n.type == "niche" and re.search(r"\d+\s*/\s*\d+", n.text)]
+    rows = [{"text": f"{b['note']}: {b['line']}", "tag": "blank", "note": b["id"]} for b in blanks[:12]]
+    rows.append({"text": f"{len(facts)} things remembered about you", "tag": "memory"})
+    rows.append({"text": f"{len(leads)} fresh lead{'s' if len(leads) != 1 else ''}, {len(pipe)} prospect{'s' if len(pipe) != 1 else ''} in total", "tag": "leads"})
+    todo = len(blanks) + (1 if len(facts) < 5 else 0) + (1 if not leads else 0)
+    return result(f"{len(blanks)} blank{'s' if len(blanks) != 1 else ''} in your notes, {len(facts)} facts remembered, "
+                  f"{len(leads)} fresh leads." if todo else "Nothing missing: you're set up.",
+                  [card("plan", "Setting you up · what I still don't know", rows,
+                        foot="I'll ask one thing at a time. Note changes are shown for your OK first; web searches ask too.")],
+                  {"blanks": [{"note": b["note"], "line": b["line"]} for b in blanks[:30]], "facts_remembered": len(facts),
+                   "fresh_leads": len(leads), "prospects": len(pipe), "scored_niches": len(scored),
+                   "how": "Interview him ONE question at a time, most valuable first: trading rule blanks (Risk Rules, "
+                          "Eval), then facts worth remembering (prices, targets, schedule, what a good week looks like, "
+                          "how he wants to be spoken to), then leads (ask which niche and area, then find_prospects). "
+                          "For a blank: ask for the value, then edit_note to fill exactly that line (he confirms the "
+                          "preview). For a fact: remember(), then say what you stored. Stop when he says stop."},
+                  [b["id"] for b in blanks[:12]])
+
+
+# ------------------------------------------------------------------ workout planner
+def plan_workout():
+    """Today's session from his history: what's been rested longest, with a small step up on each lift."""
+    hist = fitness.sessions()
+    s = fitness.summary()
+    today = clock.uk_today()
+    if not hist:
+        rows = [{"text": t, "tag": "start"} for t in ("Squat 3 x 8", "Bench press 3 x 8", "Row 3 x 10", "Plank 3 x 45s")]
+        return result("Nothing logged yet, so here's a simple full-body start. Log it after and I'll build from there.",
+                      [card("training", "Today's session · starter", rows)], {"plan": [r["text"] for r in rows], "basis": "no history"})
+    if s["day_streak"] >= 3:
+        return result(f"{s['day_streak']} days on the trot. Take today off, or an easy walk.",
+                      [card("training", "Today · recovery", [{"text": "Rest, or a 30-minute walk", "tag": "rest"}])],
+                      {"plan": ["rest"], "day_streak": s["day_streak"]})
+    last = {}                                            # exercise -> (date, top set, name)
+    for x in hist:
+        for name, sets in x["lifts"].items():
+            last[fitness.norm(name)] = (x["date"], max(sets), name)
+    picks = sorted((v for v in last.values() if (today - v[0]).days >= 2), key=lambda v: v[0])[:5]
+    rows, plan = [], []
+    for day, (w, reps), name in picks:
+        if w == 0:
+            target = f"bodyweight x {reps + 1}"
+        elif reps >= 8:
+            target = f"{fitness.fmt_w(w + 2.5)} x 6-8"
+        else:
+            target = f"{fitness.fmt_w(w)} x {reps + 1}"
+        rows.append({"text": f"{name}: {target}", "sub": f"last {clock.fmt_day(day)}: {fitness.fmt_w(w)} x {reps}", "tag": "lift"})
+        plan.append(f"{name}: {target}")
+    runs = [x for x in hist if x["activity"]]
+    if runs and (today - runs[-1]["date"]).days >= 4:
+        r = runs[-1]
+        goal = f"{r['km']:g} km" + (f", a touch under {fitness.fmt_time(r['cardio_min'] / r['km'])}/km" if r["km"] and r["cardio_min"] else "")
+        rows.append({"text": f"{r['activity'].title()}: {goal}", "sub": f"last {clock.fmt_day(r['date'])}", "tag": "cardio"})
+        plan.append(f"{r['activity']}: {goal}")
+    if not rows:
+        return result("Everything you do was trained in the last two days. Rest, or something new.",
+                      [card("training", "Today", [{"text": "Rest, or try something new", "tag": "rest"}])], {"plan": []})
+    return result(f"{len(rows)} things today, starting with {plan[0]}.",
+                  [card("training", "Today's session · rested longest first", rows,
+                        foot="Step-ups: +2.5 kg once you hit 8 reps, else one more rep at the same weight.")],
+                  {"plan": plan})
+
+
+# ------------------------------------------------------------------ good morning
+def good_morning():
+    """One call for the morning: the brief, yesterday's unfinished goals, a suggested session and the top three."""
+    b, p, w = brief_me(), plan_day(), plan_workout()
+    y = goals.parse(data.read_daily(clock.uk_today() - dt.timedelta(days=1)))
+    carry = [g["text"] for g in y if not g["done"]]
+    top = [it["text"] for it in p["data"].get("plan", [])[:3]]
+    cards = b["cards"][:2]
+    cards.append(card("plan", "Today's top three", [{"text": t, "tag": f"#{i + 1}"} for i, t in enumerate(top)] or
+                      [{"text": "Nothing pressing"}]))
+    if carry:
+        cards.append(card("goals", "Unfinished from yesterday", [{"text": t, "tag": "carry?"} for t in carry],
+                          foot="Say 'carry them over' and I'll add them to today."))
+    cards += w["cards"]
+    return result(b["say"], cards, {**b["data"], "top_three": top, "carry_over": carry, "workout": w["data"].get("plan"),
+                                    "how": "Greet him for the actual time of day. Then the day in a sentence, the top thing, the "
+                                           "session if there is one, and offer to carry over yesterday's goals. For the "
+                                           "NY open use ny_open_is exactly as given; never work times out yourself. "
+                                           "Three sentences at most; the cards hold the rest."}, b["notes"])
+
+
+# ------------------------------------------------------------------ meeting prep
+def _prospect_for(text):
+    t = (text or "").lower()
+    return next((n for n in _pipeline() if n.title.lower() in t or t in n.title.lower()), None) if t else None
+
+
+def prep_facts(n):
+    f = _facts(n)
+    hist = status.history(n.rel)
+    last = max((h for h in hist), key=lambda h: h["at"], default=None)
+    return {"company": n.title, "stage": _stage(n), "facts": f, "notes": _snippet(n.text, "notes", 600),
+            "last_move": ({"stage": last["stage"], "note": last.get("note", ""),
+                           "when": dt.datetime.fromtimestamp(last["at"]).strftime("%a %d %b")} if last else None)}
+
+
+def meeting_prep(who=""):
+    """Everything on a prospect before a call, from his notes and JARVIS's log; the model adds the questions."""
+    n = _prospect_for(who)
+    if not n:
+        try:
+            upcoming = [e for e in data.calendar(clock.uk_today(), 2) if not e["all_day"]]
+        except Exception:
+            upcoming = []
+        n = next((m for e in upcoming if (m := _prospect_for(e["title"]))), None)
+    if not n:
+        return result("I can't match that to a prospect in your notes.", [], {"error": "no prospect", "prospects": [p.title for p in _pipeline()]})
+    info = prep_facts(n)
+    rows = [{"text": f"Stage: {info['stage']}", "note": n.id}] + [{"text": f"{k.title()}: {v}"} for k, v in info["facts"].items()]
+    if info["last_move"]:
+        rows.append({"text": f"Last: {info['last_move']['stage']} ({info['last_move']['when']})", "sub": info["last_move"]["note"]})
+    return result(f"Prep for {n.title}.", [card("plan", f"Meeting prep · {n.title}", rows,
+                                                foot="From your prospect note and JARVIS's pipeline log.")],
+                  {**info, "how": "Give him: what they do and why they fit in a line, where things stand, what to find "
+                                  "out (current tools and spend, the manual work that hurts, who decides, budget, timeline), "
+                                  "and the one outcome to aim for. Only facts from his notes."}, [n.id])
+
+
+def meeting_alert_text(event, n):
+    info = prep_facts(n)
+    bits = [f"In 10 minutes: {event['title']} ({event['start'][11:16]})", f"{n.title} · {info['stage']}"]
+    for k in ("why they fit", "website", "offer", "current tools / spend"):
+        if info["facts"].get(k):
+            bits.append(f"{k.title()}: {info['facts'][k]}")
+    bits.append("Find out: current tools and spend, the manual work that hurts, who decides, budget, timeline.")
+    return "\n".join(bits)
+
+
+# ------------------------------------------------------------------ proposals
+def proposal_context(company):
+    n, alts = _find_item(company, ["prospect"])
+    if not n:
+        return result("Which prospect is this for?" if alts else f"I can't find {company} in your prospects.", [],
+                      {"error": "not found", "candidates": [a.title for a in alts] or [p.title for p in _pipeline()]})
+    offers = [{"offer": o.title, "text": o.text[:1500]} for o in V().notes if o.type == "offer"]
+    return result(f"Everything for {n.title}'s proposal.", [],
+                  {**prep_facts(n), "offers": offers,
+                   "how": "Draft the proposal from what he's told you about their needs plus these facts: the problem in "
+                          "their words, the proposed workflow, deliverables, timeline, price, and the next step. Prices "
+                          "only from his offer notes or what he says; if there's none, ask rather than invent. Save it with "
+                          "write_note folder Proposals, titled '<Company> proposal'. Mark the prospect 'proposal sent' only "
+                          "when he says he's sent it."}, [n.id])
+
+
+# ------------------------------------------------------------------ TikTok numbers
+def log_video_stats(video, views, likes=0, comments=0, shares=0, saves=0):
+    n, _ = _find_item(video, ["content"])
+    key, title = (n.rel, n.title) if n else ("title:" + str(video).strip().lower(), str(video).strip())
+    stats = {k: int(v or 0) for k, v in (("views", views), ("likes", likes), ("comments", comments), ("shares", shares), ("saves", saves))}
+    v = status.record_video(key, title, stats)
+    eng = (stats["likes"] + stats["comments"] + stats["shares"] + stats["saves"]) / max(1, stats["views"])
+    return result(f"Logged {title}: {stats['views']:,} views, {eng:.1%} engagement.",
+                  [card("status", f"Video · {title}", [{"text": f"{stats['views']:,} views", "sub":
+                        f"{stats['likes']:,} likes · {stats['comments']:,} comments · {stats['shares']:,} shares · {stats['saves']:,} saves",
+                        "tag": f"{eng:.1%}", "note": n.id if n else None}],
+                        foot="Kept in JARVIS's own log (data/video_stats.json). Snapshots over time show the curve.")],
+                  {"video": title, "stats": stats, "engagement": round(eng, 4), "snapshots": len(v["snapshots"])})
+
+
+def video_stats(video=""):
+    vids = status.videos()
+    if not vids:
+        return result("No numbers logged yet. Tell me a video's views and likes and I'll start tracking.", [], {"videos": []})
+    rows = []
+    for k, v in vids.items():
+        l = v["latest"]
+        eng = (l.get("likes", 0) + l.get("comments", 0) + l.get("shares", 0) + l.get("saves", 0)) / max(1, l.get("views", 0))
+        note = next((n for n in V().notes if n.rel == k), None)
+        hook = next((ln.split(":", 1)[1].strip() for ln in (note.text.splitlines() if note else [])
+                     if ln.lower().startswith(("hook:", "**hook", "opening line:"))), "")
+        rows.append({"title": v["title"], "views": l.get("views", 0), "engagement": round(eng, 4), "hook": hook,
+                     "snapshots": len(v["snapshots"]), "id": note.id if note else None})
+    if video:
+        rows = [r for r in rows if str(video).lower() in r["title"].lower()] or rows
+    rows.sort(key=lambda r: -r["views"])
+    avg = sum(r["views"] for r in rows) / len(rows)
+    return result(f"{len(rows)} videos tracked. Best: {rows[0]['title']} with {rows[0]['views']:,} views.",
+                  [card("status", "Video numbers · most viewed first",
+                        [{"text": r["title"], "sub": (f"hook: {r['hook']}" if r["hook"] else ""), "meta": f"{r['views']:,}",
+                          "tag": f"{r['engagement']:.1%}", "note": r["id"]} for r in rows[:10]],
+                        foot=f"Average {avg:,.0f} views. Engagement = likes + comments + shares + saves ÷ views.")],
+                  {"videos": rows, "average_views": round(avg), "how": "Say which hooks and topics beat his average and "
+                   "what they have in common; suggest what to make more of. Only from these numbers."})
+
+
+# ------------------------------------------------------------------ blocking time on the calendar
+def block_time(title, minutes=60, day="", earliest="09:00", latest="18:00"):
+    """Find the first free slot that day and propose it (added only when he confirms)."""
+    d = _parse_day(day)
+    minutes = max(15, min(int(minutes or 60), 480))
+    try:
+        events = [e for e in data.calendar(d, 1) if not e["all_day"]]
+    except Exception as e:
+        return _google_down("calendar", e)
+    busy = [(e["start"][11:16], e["end"][11:16]) for e in events]
+    if d.weekday() < 5:                                  # keep his NY session clear
+        o = clock.ny_open_uk(d)
+        busy.append(((o - dt.timedelta(minutes=30)).strftime("%H:%M"), (o + dt.timedelta(minutes=120)).strftime("%H:%M")))
+    t = dt.datetime.combine(d, dt.time.fromisoformat(earliest))
+    end_day = dt.datetime.combine(d, dt.time.fromisoformat(latest))
+    now = clock.uk_now().replace(tzinfo=None)
+    if d == now.date() and t < now:
+        t = (now + dt.timedelta(minutes=15 - now.minute % 15)).replace(second=0, microsecond=0)
+    while t + dt.timedelta(minutes=minutes) <= end_day:
+        a, b = t.strftime("%H:%M"), (t + dt.timedelta(minutes=minutes)).strftime("%H:%M")
+        if not any(a < be and b > bs for bs, be in busy):
+            r = schedule_event(title, t.strftime("%Y-%m-%dT%H:%M"), minutes)
+            r["data"]["slot"] = f"{_day_label(d)} {a}-{b}"
+            r["say"] = f"First free slot {_when(d)} is {a} to {b}. Confirm and I'll add it."
+            return r
+        t += dt.timedelta(minutes=15)
+    return result(f"No free {minutes}-minute slot {_when(d)} between {earliest} and {latest}.", [],
+                  {"error": "no slot", "busy": busy})
 
 
 # ------------------------------------------------------------------ market_brief (pre-session)
@@ -1641,6 +1884,41 @@ SPECS = [
      "input_schema": {"type": "object", "properties": {
          "text": {"type": "string"}, "kind": {"type": "string", "description": "One word: food, health, idea, work, trade, mood…"}},
          "required": ["text"]}},
+    {"name": "setup_gaps",
+     "description": "What JARVIS still doesn't know: blank values in his notes (Risk Rules, Eval, prospects), how many "
+                    "facts are remembered, whether there are leads. Use for 'set me up', 'interview me', 'what are you "
+                    "missing', then interview him one question at a time.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "good_morning",
+     "description": "The morning in one go: brief, top three, yesterday's unfinished goals to carry over, suggested "
+                    "workout. Use on 'good morning' (the first greeting of the day) or 'start my day'.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "plan_workout",
+     "description": "What he should train today, from his history: rested-longest lifts with small step-ups, cardio if due, "
+                    "or rest after 3 days in a row.", "input_schema": {"type": "object", "properties": {}}},
+    {"name": "meeting_prep",
+     "description": "Brief him before a call with a prospect: stage, facts, last contact, what to find out.",
+     "input_schema": {"type": "object", "properties": {"who": {"type": "string", "description": "Company, or blank for the next call"}}}},
+    {"name": "proposal_context",
+     "description": "Facts and offers for writing a prospect's proposal. Then draft it and save with write_note folder Proposals.",
+     "input_schema": {"type": "object", "properties": {"company": {"type": "string"}}, "required": ["company"]}},
+    {"name": "log_video_stats",
+     "description": "Record a TikTok video's numbers when he reports them ('the ego one's at 12k views, 900 likes').",
+     "input_schema": {"type": "object", "properties": {
+         "video": {"type": "string"}, "views": {"type": "integer"}, "likes": {"type": "integer"},
+         "comments": {"type": "integer"}, "shares": {"type": "integer"}, "saves": {"type": "integer"}},
+         "required": ["video", "views"]}},
+    {"name": "video_stats",
+     "description": "His tracked TikTok numbers: most viewed, engagement, hooks, versus his average. Or one video's.",
+     "input_schema": {"type": "object", "properties": {"video": {"type": "string"}}}},
+    {"name": "block_time",
+     "description": "Block time on his calendar: finds the first free slot (keeping his NY session clear) and proposes "
+                    "it; it's added only when he confirms.",
+     "input_schema": {"type": "object", "properties": {
+         "title": {"type": "string"}, "minutes": {"type": "integer"},
+         "day": {"type": "string", "description": "today, tomorrow, a weekday or YYYY-MM-DD"},
+         "earliest": {"type": "string", "description": "HH:MM, default 09:00"}, "latest": {"type": "string", "description": "HH:MM, default 18:00"}},
+         "required": ["title"]}},
     {"name": "remember",
      "description": "Store one fact about Ali in JARVIS's memory, loaded into every future conversation. Use when he "
                     "asks you to remember something, or tells you something about himself that will still matter in "
@@ -1656,7 +1934,7 @@ SPECS = [
      "input_schema": {"type": "object", "properties": {
          "title": {"type": "string"},
          "body": {"type": "string", "description": "Markdown. Keep his words where he dictated them."},
-         "folder": {"type": "string", "enum": ["Scripts", "Ideas", "Video ideas", "Journal", "Notes"],
+         "folder": {"type": "string", "enum": ["Scripts", "Ideas", "Video ideas", "Journal", "Notes", "Proposals"],
                     "description": "Video ideas for TikTok ideas; Ideas for anything else"},
          "links": {"type": "array", "items": {"type": "string"},
                    "description": "Titles of existing notes to link; only ones that exist in his vault"}},
@@ -1682,7 +1960,10 @@ FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox
          "add_goals": add_goals, "tick_goal": tick_goal, "log_workout": log_workout,
          "workout_stats": workout_stats, "set_reminder": set_reminder, "list_reminders": list_reminders,
          "cancel_reminder": cancel_reminder, "outreach_plan": outreach_plan,
-         "ingest_source": ingest_source, "wiki_write": wiki_write, "wiki_lint": wiki_lint, "log_entry": log_entry}
+         "ingest_source": ingest_source, "wiki_write": wiki_write, "wiki_lint": wiki_lint, "log_entry": log_entry,
+         "setup_gaps": setup_gaps, "good_morning": good_morning, "plan_workout": plan_workout,
+         "meeting_prep": meeting_prep, "proposal_context": proposal_context, "log_video_stats": log_video_stats,
+         "video_stats": video_stats, "block_time": block_time}
 
 # Tools whose results contain text Ali didn't write (his files, his inbox, the web).
 UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "find_niches", "find_prospects",
@@ -1690,7 +1971,7 @@ UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
 WRITES = {"remember", "write_note", "set_status", "add_prospect", "edit_note", "undo_last_edit", "add_goals",
           "tick_goal", "log_workout", "set_reminder", "cancel_reminder",
-          "ingest_source", "wiki_write", "log_entry"}
+          "ingest_source", "wiki_write", "log_entry", "log_video_stats"}
 
 
 def run(name, args):

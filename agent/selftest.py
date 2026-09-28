@@ -62,8 +62,8 @@ check("No API key names in browser code", not leaks, str(leaks))
 WRITE = re.compile(r"(?<!wave\.)open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
 check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache), "
-      "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log), reminders.py (data/reminders.json) and localvoice.py (local/ setup, one temp WAV per turn) write files",
-      writers == ["backup.py", "checkin.py", "data.py", "google.py", "localvoice.py", "market.py", "memory.py", "reminders.py", "status.py", "telegram.py", "usage.py"],
+      "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log), reminders.py (data/reminders.json), localvoice.py (local/ setup, one temp WAV per turn) and brain.py (data/conversation.json) write files",
+      writers == ["backup.py", "brain.py", "checkin.py", "data.py", "google.py", "localvoice.py", "market.py", "memory.py", "reminders.py", "status.py", "telegram.py", "usage.py"],
       f"writers: {writers}")
 check("telegram.py only writes data/telegram.json", 'STATE = data.ROOT / "data" / "telegram.json"'
       in src(ROOT / "agent" / "telegram.py"))
@@ -169,7 +169,7 @@ try:
     telegram._call = lambda m, p=None, timeout=15: _sent.append((m, p)) or {}
     telegram._download = lambda fid: b"fake-ogg"
     telegram.voice.stt = lambda audio, mime: "save that idea about quiet twenties"
-    telegram.brain.ask = lambda text, emit=None, readonly=False, attachments=None: _asked.append((text, readonly, attachments)) or {"reply": "ok", "cards": [], "pending": []}
+    telegram.brain.ask = lambda text, emit=None, readonly=False, attachments=None, spoken=False: _asked.append((text, readonly, attachments)) or {"reply": "ok", "cards": [], "pending": []}
     telegram.brain.confirm = lambda pid, ok: _confirmed.append((pid, ok)) or {"reply": "done", "cards": []}
     telegram._state.update(code="123456", tries=0, locked_until=0)
     M = lambda chat, text, **kw: {"message": {"chat": {"id": chat}, "from": {"first_name": "Ali"}, "text": text, **kw}}

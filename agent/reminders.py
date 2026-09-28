@@ -160,6 +160,22 @@ def check(notify=None):
     return raised
 
 
+def raise_alert(text, key, notify=None):
+    """An alert that isn't a scheduled reminder (e.g. meeting prep). `key` stops it firing twice."""
+    with _lock:
+        db = _load()
+        if any(a["id"] == key for a in db["alerts"]):
+            return False
+        db["alerts"] = (db["alerts"] + [{"id": key, "text": text, "at": _now().strftime(FMT)}])[-KEEP_ALERTS:]
+        _save(db)
+    if notify:
+        try:
+            notify(text)
+        except Exception:
+            pass
+    return True
+
+
 def alerts():
     return [a for a in _load()["alerts"] if not a.get("seen")]
 
