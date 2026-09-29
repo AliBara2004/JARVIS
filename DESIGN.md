@@ -77,6 +77,12 @@ Use `…` not `...`, and loading text ends in `…`. Headings may carry the fain
 - **Notice** (`.toast`): top right, under the telemetry bar. Violet = info, rose = warning (failover), pink =
   reminder. Auto-dismiss, paused on hover, `aria-live="polite"`.
 - **Skeleton** (`.skel`): shimmering bars where data will land; never show "—" placeholders.
+- **Teleprompter** (`#prompter`): full-screen black stage, 44px Sora, a reading band a third of the way
+  down (pink hairlines, ▶ marker) that the first and last spoken lines sit in; beat labels in small mono.
+  Paced in words per minute from the laid-out text. Keys: Space, ↑↓, ←→, - =, M (mirror), Esc.
+- **Prospect board** (`#board`): `<dialog>` with one column per pipeline stage (won = emerald, lost dimmed);
+  cards have a violet spine and a Move `<select>` as the keyboard alternative to dragging.
+- **Checklist rows** reuse the goal diamond (`.goal`), inside the Trading card.
 - **Quiet line** (`.quiet-line`): empty widgets fold into one dashed row ("Nothing yet in …"), tap to show.
 
 ## 5. Layout

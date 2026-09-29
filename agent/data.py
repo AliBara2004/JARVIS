@@ -353,6 +353,7 @@ def save_goals(old_text, new_text):
 # reach Ali's own notes, and sources (JARVIS/Sources, via write_note) are new files only, never changed.
 WIKI_DIR = "Wiki"
 LOG_DIR = "Log"
+DAYS_DIR = "Days"            # one digest per finished day (days.py); new files only, never rewritten
 WIKI_RESERVED = {"index", "log"}
 
 
@@ -393,6 +394,25 @@ def write_wiki_index(text):
     tmp = p.with_name(p.name + ".jarvis-tmp")
     tmp.write_bytes(text.encode("utf-8"))
     os.replace(tmp, p)
+    return p.relative_to(root).as_posix()
+
+
+def day_digest_exists(day):
+    try:
+        return _jarvis_path(DAYS_DIR, f"{day}.md")[2].exists()
+    except RuntimeError:
+        return True                  # no vault: nothing to write, so nothing is "pending"
+
+
+def write_day_digest(day, body, meta):
+    """JARVIS/Days/<YYYY-MM-DD>.md, created once (mode "x"): a digest is never overwritten."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)):
+        raise RuntimeError("bad day")
+    root, base, p = _jarvis_path(DAYS_DIR, f"{day}.md")
+    base.mkdir(parents=True, exist_ok=True)
+    fm = "---\n" + "".join(f"{k}: {str(v).replace(chr(10), ' ')}\n" for k, v in meta.items()) + "---\n\n"
+    with open(p, "x", encoding="utf-8", newline="\n") as f:
+        f.write(fm + body.strip() + "\n")
     return p.relative_to(root).as_posix()
 
 

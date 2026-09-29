@@ -69,6 +69,24 @@ def videos():
     return out
 
 
+CHECKLIST_FILE = data.ROOT / "data" / "checklist.json"   # pre-session checklist ticks per day; gitignored
+
+
+def checklist_db():
+    try:
+        return json.loads(CHECKLIST_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_checklist(db):
+    with _lock:
+        CHECKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CHECKLIST_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(db, indent=1), encoding="utf-8")
+        os.replace(tmp, CHECKLIST_FILE)
+
+
 def history(rel):
     return _load().get(rel, [])
 

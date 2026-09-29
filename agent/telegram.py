@@ -71,13 +71,18 @@ def status():
     return out
 
 
-def notify(text):
-    """Push a reminder to the paired chat. False if Telegram isn't set up or paired."""
+def notify(text, icon="⏰"):
+    """Push a reminder (or, with icon="", a nudge that brings its own) to the paired chat. False if Telegram
+    isn't set up or paired."""
     chat = _load().get("chat_id")
     if not (enabled() and chat):
         return False
-    _send(chat, "⏰ " + text)
+    _send(chat, (icon + " " if icon else "") + text)
     return True
+
+
+def nudge(text):
+    return notify(text, "")
 
 
 def unpair():

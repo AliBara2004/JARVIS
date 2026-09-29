@@ -23,6 +23,9 @@ from urllib.parse import parse_qs, urlparse
 import attach
 import backup
 import brain
+import days
+import proactive
+import status
 import checkin
 import data
 import google
@@ -253,6 +256,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"capture": capture.latest()})
         if u.path == "/api/widgets":
             return self._json(tools.widgets())
+        if u.path == "/api/pipeline":
+            return self._json(tools.pipeline_board())
         if u.path == "/api/history":
             return self._json({"turns": brain.transcript()})
         if u.path == "/api/memory":
@@ -356,6 +361,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "action must be add or tick"}, 400)
             except (IndexError, ValueError, TypeError, RuntimeError) as e:
                 return self._json({"error": str(e)}, 409)
+        if path == "/api/checklist":
+            key = str(body.get("key", ""))
+            tools.tick_checklist("all" if key == "all" else [key], bool(body.get("done", True)))
+            return self._json(tools.widgets())
+        if path == "/api/pipeline":
+            stage = str(body.get("stage", "")).lower()
+            if stage not in status.PROSPECT_STAGES:
+                return self._json({"error": "unknown stage"}, 400)
+            return self._json(tools.move_prospect(str(body.get("title", ""))[:200], stage))
         if path == "/api/reset":
             brain.reset()
             return self._json({"ok": True})
@@ -447,6 +461,8 @@ def main():
     threading.Thread(target=watch_vault, daemon=True).start()
     telegram.start()
     reminders.start(notify=telegram.notify)
+    proactive.start(telegram.nudge)
+    days.start(lambda x: [n.title for n in vault.get().notes] if x == "titles" else vault.reload())
     threading.Thread(target=voice.localvoice.warm, daemon=True).start()   # Kokoro loaded before the first reply
     threading.Thread(target=watch_meetings, daemon=True).start()
     threading.Thread(target=watch_hotkey, daemon=True).start()

@@ -457,8 +457,9 @@ def draft_script(title, hook, beats, cta="", length_s=60, notes=""):
                   [card("script", f"Script · {title} · ~{length_s}s", body=body,
                         foot=f"{len(beats)} beats · {words} words · about {round(words / 2.6)}s spoken at a normal pace. "
                              "Not posted anywhere.",
-                        actions=[{"id": "copy", "label": "Copy", "style": "primary"}])],
-                  {"status": "script shown on screen", "spoken_seconds_estimate": round(words / 2.6)})
+                        actions=[{"id": "prompter", "label": "Teleprompter", "style": "primary"},
+                                 {"id": "copy", "label": "Copy"}])],
+                  {"status": "script shown on screen (with a Teleprompter button)", "spoken_seconds_estimate": round(words / 2.6)})
 
 
 # ------------------------------------------------------------------ write_note
@@ -678,7 +679,8 @@ def widgets():
     except Exception as e:
         items = [{"text": f"(can't read today's note: {e})", "done": False}]
     u = usage.summary()
-    return {"date": clock.uk_today().isoformat(), "goals": items, "session": _session_widget(), "trading": _trading_widget(),
+    return {"date": clock.uk_today().isoformat(), "goals": items, "session": _session_widget(),
+            "trading": {**_trading_widget(), "checklist": checklist_state()},
             "training": fitness.summary(), "next": _next_event(), "activity": activity(),
             "reminders": [{"text": i["text"], "when": reminders.describe(i)} for i in reminders.upcoming(4)],
             "spend": {"usd": round(u["today"]["usd"], 2), "budget": u["budget_usd"],
@@ -729,6 +731,105 @@ def _trading_widget():
     return {"risk": _bullets("Risk Rules"),
             "eval": {"start": start, "balance": bal, "target": target,
                      "pnl": round(bal - start, 2) if bal is not None and start else None}}
+
+
+# ------------------------------------------------------------------ pre-session checklist
+# Built fresh each day from his Risk Rules and today's news; ticks live in data/checklist.json. When the last
+# item is ticked, one line goes into today's log (JARVIS/Log) so his journal shows he ran it.
+
+
+def _checklist_items():
+    rules = {k.lower(): v for k, v in _bullets("Risk Rules")}
+    s = _session_widget()
+    reds = [e for e in s["events"] if e["red"]]
+    items = [("news", "Checked today's news: " + (", ".join(f"{e['time']} {e['currency']} {e['title']}" for e in reds[:3])
+                                                  if reds else "no red folders listed"))]
+    if s.get("buffer_min"):
+        items.append(("window", f"No trades {s['buffer_min']} minutes either side of red folders"))
+    for key, slug, label in (("risk per trade", "risk", "Risk per trade"), ("max daily loss", "maxloss", "Max daily loss, then I stop"),
+                             ("max losses per day before i stop", "losses", "Losses before I stop for the day")):
+        if rules.get(key):
+            items.append((slug, f"{label}: {rules[key]}"))
+    setups = rules.get("setups i'm allowed to take")
+    items.append(("setups", f"Only my setups: {setups}" if setups else "Only setups I can name before I enter"))
+    items.append(("head", "Head's clear: rested, not chasing yesterday, no revenge trades"))
+    return items
+
+
+def checklist_state():
+    day = clock.uk_today().isoformat()
+    st = status.checklist_db().get(day, {})
+    ticked = set(st.get("ticked", []))
+    items = [{"key": k, "text": t, "done": k in ticked} for k, t in _checklist_items()]
+    done = sum(i["done"] for i in items)
+    return {"items": items, "done": done, "total": len(items), "complete": done == len(items), "done_at": st.get("done_at")}
+
+
+def tick_checklist(keys, done=True):
+    """Tick (or untick) checklist items by key; "all" ticks everything. Logs once when it's complete."""
+    day = clock.uk_today().isoformat()
+    valid = [k for k, _ in _checklist_items()]
+    keys = valid if keys == "all" or "all" in (keys or []) else [k for k in keys or [] if k in valid]
+    db = status.checklist_db()
+    st = db.setdefault(day, {"ticked": []})
+    ticked = set(st["ticked"])
+    ticked = ticked | set(keys) if done else ticked - set(keys)
+    st["ticked"] = sorted(ticked)
+    newly = set(valid) <= ticked and not st.get("done_at")
+    if newly:
+        st["done_at"] = clock.uk_now().strftime("%H:%M")
+    for d in [d for d in db if d < (clock.uk_today() - dt.timedelta(days=60)).isoformat()]:
+        del db[d]
+    status.save_checklist(db)
+    if newly:
+        try:
+            log_entry("Pre-session checklist done: " + "; ".join(t for _, t in _checklist_items()), "trading")
+        except Exception:
+            pass
+    return checklist_state()
+
+
+def session_checklist(action="show", items=None):
+    """The tool: show today's checklist, or tick items (by key, by words from the item, or "all")."""
+    if action == "tick":
+        want = [str(x).strip().lower() for x in (items or ["all"]) if str(x).strip()]
+        if "all" in want:
+            keys = "all"
+        else:
+            keys = [k for k, t in _checklist_items() if any(w == k or w in t.lower() for w in want)]
+        st = tick_checklist(keys, True)
+    else:
+        st = checklist_state()
+    rows = [{"text": i["text"], "tag": "done" if i["done"] else "todo"} for i in st["items"]]
+    left = [i["text"] for i in st["items"] if not i["done"]]
+    say = (f"Checklist done{' at ' + st['done_at'] if st['done_at'] else ''}. Logged in today's journal." if st["complete"]
+           else f"{st['done']} of {st['total']} done. Next: {left[0]}")
+    return result(say, [card("checklist", f"Pre-session checklist · {st['done']}/{st['total']}", rows,
+                             foot="Built from your Risk Rules and today's Forex Factory calendar. Tick on the Trading card too.")],
+                  {**st, "how": "Go through the items not done one at a time, briskly: read one, wait for his yes, tick it. "
+                                "If he says he's done them all, tick all."})
+
+
+# ------------------------------------------------------------------ prospect board
+def pipeline_board():
+    """Every prospect with its stage, days in that stage and the facts worth showing on a card."""
+    now = time.time()
+    out = []
+    for n in _pipeline():
+        st = _stage(n)
+        hist = status.history(n.rel)
+        since = max((h["at"] for h in hist if h["stage"] == st), default=n.mtime or now)
+        f = _facts(n)
+        out.append({"id": n.id, "title": n.title, "stage": st, "days": int((now - since) // 86400),
+                    "website": f.get("website", ""), "location": f.get("location", ""),
+                    "why": f.get("why they fit", ""), "niche": f.get("niche", "")})
+    return {"stages": status.PROSPECT_STAGES, "prospects": sorted(out, key=lambda p: -p["days"])}
+
+
+def move_prospect(title, stage):
+    """A drag on the board: Ali's own hand, same path as saying "mark Cobalt as contacted"."""
+    r = set_status(title, stage)
+    return {**pipeline_board(), "say": r["say"], "error": r["data"].get("error")}
 
 
 def set_goal(index, done):
@@ -1924,6 +2025,16 @@ SPECS = [
      "description": "Health-check the wiki: orphan pages, broken links, pages without sources, stale pages. Then fix "
                     "what you can with wiki_write.",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "session_checklist",
+     "description": "Ali's pre-session trading checklist for today (built from his Risk Rules and today's red folders). "
+                    "'run my checklist', 'pre-session checklist', 'am I ready to trade': action show, then go through "
+                    "what isn't done one item at a time. When he confirms items (or says he's done them all), action "
+                    "tick with those items. Completing it logs a line in today's journal.",
+     "input_schema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["show", "tick"]},
+         "items": {"type": "array", "items": {"type": "string"},
+                   "description": "For tick: item keys or words from the items, or [\"all\"]."}},
+         "required": ["action"]}},
     {"name": "log_entry",
      "description": "Quick capture into today's log (JARVIS/Log): something he did, ate, noticed, decided, a photo he "
                     "sent with 'log this'. One line, his words. Not for goals, workouts or reminders (they have tools).",
@@ -2006,7 +2117,7 @@ FUNCS = {"search_brain": search_brain, "research_web": research_web, "read_inbox
          "add_goals": add_goals, "tick_goal": tick_goal, "log_workout": log_workout,
          "workout_stats": workout_stats, "set_reminder": set_reminder, "list_reminders": list_reminders,
          "cancel_reminder": cancel_reminder, "outreach_plan": outreach_plan,
-         "ingest_source": ingest_source, "wiki_write": wiki_write, "wiki_lint": wiki_lint, "log_entry": log_entry,
+         "ingest_source": ingest_source, "wiki_write": wiki_write, "wiki_lint": wiki_lint, "log_entry": log_entry, "session_checklist": session_checklist,
          "setup_gaps": setup_gaps, "good_morning": good_morning, "plan_workout": plan_workout,
          "meeting_prep": meeting_prep, "proposal_context": proposal_context, "log_video_stats": log_video_stats,
          "video_stats": video_stats, "block_time": block_time}
@@ -2017,7 +2128,7 @@ UNTRUSTED_SOURCES = {"search_brain", "read_inbox", "research_web", "brief_me", "
 # Tools that write. After reading untrusted text in a turn, these need Ali's own words to ask for them.
 WRITES = {"remember", "write_note", "set_status", "add_prospect", "edit_note", "undo_last_edit", "add_goals",
           "tick_goal", "log_workout", "set_reminder", "cancel_reminder",
-          "ingest_source", "wiki_write", "log_entry", "log_video_stats"}
+          "ingest_source", "wiki_write", "log_entry", "log_video_stats", "session_checklist"}
 
 
 def run(name, args):

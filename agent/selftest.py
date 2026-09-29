@@ -67,9 +67,12 @@ check("No API key names in browser code", not leaks, str(leaks))
 WRITE = re.compile(r"(?<!wave\.)open\([^)]*['\"][wax]b?['\"]|write_text|write_bytes|\.unlink\(|rmtree|os\.remove|\.rename\(")
 writers = sorted({p.name for p in own if WRITE.search(code_only(p))})
 check("Only data.py (JARVIS/ notes), memory.py (memory/), google.py (its token), market.py (its cache), "
-      "status.py (pipeline log), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log), reminders.py (data/reminders.json), localvoice.py (local/ setup, one temp WAV per turn) and brain.py (data/conversation.json) write files",
-      writers == ["backup.py", "brain.py", "checkin.py", "data.py", "google.py", "localvoice.py", "market.py", "memory.py", "reminders.py", "status.py", "telegram.py", "usage.py"],
+      "status.py (pipeline log, checklist ticks), days.py (data/transcripts/), telegram.py (pairing), checkin.py (last check-in date), backup.py (git ignore rules), usage.py (the spend log), reminders.py (data/reminders.json), localvoice.py (local/ setup, one temp WAV per turn) and brain.py (data/conversation.json) write files",
+      writers == ["backup.py", "brain.py", "checkin.py", "data.py", "days.py", "google.py", "localvoice.py", "market.py", "memory.py", "reminders.py", "status.py", "telegram.py", "usage.py"],
       f"writers: {writers}")
+check("days.py only writes data/transcripts/ (the digests go through data.py)",
+      'DIR = data.ROOT / "data" / "transcripts"' in src(ROOT / "agent" / "days.py")
+      and "write_day_digest" in src(ROOT / "agent" / "days.py"))
 check("telegram.py only writes data/telegram.json", 'STATE = data.ROOT / "data" / "telegram.json"'
       in src(ROOT / "agent" / "telegram.py"))
 check("status.py only writes data/status_log.json", 'FILE = data.ROOT / "data" / "status_log.json"'
@@ -415,6 +418,50 @@ marked = llm._cached(hist)
 check("History cache mark goes on the last message only, without touching history",
       bool(marked[-1]["content"][-1].get("cache_control")) and hist[-1]["content"] == "and?"
       and "cache_control" not in str(marked[:-1]))
+
+print("\nChecklist, board, nudges, memory across days")
+import days as _days  # noqa: E402
+import proactive as _pro  # noqa: E402
+_tmpd = pathlib.Path(_tmp.mkdtemp())
+_real_ck, _real_log, _real_dir = status.CHECKLIST_FILE, tools.log_entry, _days.DIR
+status.CHECKLIST_FILE, _days.DIR = _tmpd / "checklist.json", _tmpd / "transcripts"
+_logged = []
+tools.log_entry = lambda text, kind="note": _logged.append(text)
+try:
+    st = tools.checklist_state()
+    check("The checklist is built from Risk Rules plus news and state checks", st["total"] >= 3 and not st["complete"])
+    tools.tick_checklist([st["items"][0]["key"]])
+    check("Ticking one item counts it", tools.checklist_state()["done"] == 1 and not _logged)
+    done = tools.tick_checklist("all")
+    check("Ticking all completes it and logs once to the journal", done["complete"] and len(_logged) == 1)
+    tools.tick_checklist("all")
+    check("Completing again doesn't log twice", len(_logged) == 1)
+    check("The checklist tool can only run on Ali's own words", "session_checklist" in tools.WRITES)
+    _days.record("[via Telegram]\nWhat did we decide about Cobalt?", "You decided to follow up Friday.")
+    rs = _days.rows(clock.uk_today().isoformat())
+    check("Each exchange goes to today's transcript, without JARVIS's bracketed context",
+          len(rs) == 1 and rs[0]["you"] == "What did we decide about Cobalt?")
+    check("Today is never digested while it's still going", clock.uk_today().isoformat() not in _days.pending())
+finally:
+    status.CHECKLIST_FILE, tools.log_entry, _days.DIR = _real_ck, _real_log, _real_dir
+
+
+class _P:
+    def __init__(self, title, text):
+        self.title, self.text = title, text
+
+
+_ps = [_P("Cobalt Dental", "Website: https://www.cobaltdental.co.uk\n"), _P("Harbour Physio", "")]
+check("A prospect's email is recognised by their website's domain",
+      getattr(_pro.prospect_for_email("Sam <sam@cobaltdental.co.uk>", _ps), "title", None) == "Cobalt Dental")
+check("...or by their full name in the sender",
+      getattr(_pro.prospect_for_email("Harbour Physio Clinic <info@hpc.com>", _ps), "title", None) == "Harbour Physio")
+check("Strangers aren't matched", _pro.prospect_for_email("Newsletter <news@shop.com>", _ps) is None)
+check("Nudges stay quiet at night", _pro.check(lambda t: None, now=_dt.datetime.combine(clock.uk_today(), _dt.time(23, 45))) == [])
+os.environ["JARVIS_NUDGES"] = "off"
+check("Nudges can be switched off", _pro.enabled() == set())
+os.environ.pop("JARVIS_NUDGES", None)
+check("Board moves use the same stages as saying it", tools.pipeline_board()["stages"] == status.PROSPECT_STAGES)
 
 print("\nSecrets on disk")
 for f in (".env", ".secrets/google_token.json"):

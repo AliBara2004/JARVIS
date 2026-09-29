@@ -11,6 +11,7 @@ import time
 
 import attach
 import clock
+import days
 import data
 import llm
 import memory
@@ -450,6 +451,10 @@ def _model_turn(text, emit, readonly=False, attachments=None, spoken=False):
     _history.append(turn)
     del _history[:-HISTORY_TURNS]
     _save_history()
+    try:
+        days.record(text, reply)                  # memory across days (days.py)
+    except Exception:
+        pass
     return {"reply": reply, "cards": cards, "notes": notes, "mode": "model", "tools": [u for u in used if u != "attachment"],
             "pending": tools.pending_list(), "graph_changed": changed, "model": model}
 

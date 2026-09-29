@@ -173,6 +173,35 @@
   </dialog>
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
+  <!-- teleprompter: full screen, auto-scrolling, for recording voice-overs -->
+  <div class="prompter" id="prompter" hidden role="dialog" aria-modal="true" aria-label="Teleprompter">
+    <div class="pr-top"><span class="pr-title" id="pr-title"></span><span class="pr-time" id="pr-time"></span></div>
+    <div class="pr-stage" id="pr-stage"><div class="pr-text" id="pr-text"></div></div>
+    <div class="pr-band" aria-hidden="true"></div>
+    <div class="pr-count" id="pr-count" hidden></div>
+    <div class="pr-bar">
+      <button class="btn primary" id="pr-play">Start</button>
+      <button class="btn" id="pr-slower" title="Slower (↓)" aria-label="Slower">−</button>
+      <span class="pr-wpm" id="pr-wpm" aria-live="polite"></span>
+      <button class="btn" id="pr-faster" title="Faster (↑)" aria-label="Faster">+</button>
+      <button class="btn" id="pr-back" title="Back a line (←)">Back</button>
+      <button class="btn" id="pr-small" title="Smaller text (-)" aria-label="Smaller text">A−</button>
+      <button class="btn" id="pr-big" title="Bigger text (=)" aria-label="Bigger text">A+</button>
+      <button class="btn" id="pr-mirror" title="Mirror for a glass rig (M)">Mirror</button>
+      <button class="btn" id="pr-voice" title="Voice control: say slower, faster, back, pause or go">Voice control</button>
+      <button class="btn" id="pr-close" title="Close (Esc)">Close</button>
+    </div>
+  </div>
+
+  <!-- prospect board: drag between stages, or use each card's Move menu -->
+  <dialog class="board" id="board" aria-label="Prospect board">
+    <div class="board-head">
+      <span class="label">Prospects <span id="board-count"></span></span>
+      <span><button class="link" id="board-find">find prospects</button><button class="link" id="board-close">close</button></span>
+    </div>
+    <div class="board-cols" id="board-cols"></div>
+  </dialog>
+
   <script src="vendor/ort.wasm.min.js"></script>
   <script src="wake.js"></script>
   <script type="importmap">{ "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/addons/" } }</script>

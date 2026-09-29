@@ -211,6 +211,7 @@ function renderFilters() {
 }
 
 // ---------------------------------------------------------------- inspector
+let lastNote = null;
 async function openNote(id) {
   const el = $('#note');
   $('.left').classList.toggle('reading', id !== null);
@@ -223,6 +224,7 @@ async function openNote(id) {
   let n;
   try { n = await api(`/api/note?id=${id}`); }
   catch (e) { el.textContent = `Couldn't load note: ${e.message}`; return; }
+  lastNote = n;
   const color = Graph.colorFor(n.type);
   const meta = Object.entries(n.meta).filter(([k]) => k !== 'type');
   el.className = 'note'; el.title = '';
@@ -237,6 +239,7 @@ async function openNote(id) {
       <button class="btn" data-node-act="ask" data-title="${esc(n.title)}">Ask JARVIS</button>
       ${obsidian ? `<a class="btn" href="${esc(obsidian)}">Open in Obsidian</a>` : ''}
       <button class="btn" data-node-act="trace">Trace path</button>
+      ${n.type === 'script' || /\/Scripts\//.test(n.rel) ? '<button class="btn primary" data-node-act="prompter">Teleprompter</button>' : ''}
     </div>
     ${meta.length ? `<dl class="kv">${meta.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
     <div class="body">${md(n.text)}</div>
@@ -484,7 +487,8 @@ function renderCard(c) {
     </div>`;
   }).join('');
   const actions = c.actions.map(a => {
-    if (a.id === 'copy') return `<button class="btn primary" data-action="copy">Copy</button>`;
+    if (a.id === 'copy') return `<button class="btn ${a.style === 'primary' ? 'primary' : ''}" data-action="copy">Copy</button>`;
+    if (a.id === 'prompter') return `<button class="btn primary" data-action="prompter">Teleprompter</button>`;
     if (a.id === 'google-connect') return `<button class="btn primary" data-action="google">Connect Google</button>`;
     if (a.id === 'telegram-unpair') return `<button class="btn" data-action="telegram-unpair">Unpair</button>`;
     if (a.id === 'checkin-answer') return `<button class="btn primary" data-action="checkin-answer">Answer</button>`;
@@ -1342,6 +1346,11 @@ function bindUI() {
         return;
       }
       if (a === 'trading-brief') return ask('Pre-session brief: news and markets.');
+      if (a === 'prompter') {
+        const c = act.closest('.card');
+        return Prompter.open(c.querySelector('.ctitle')?.textContent.replace(/^Script · /, '').replace(/ · ~\d+s$/, '') || 'Script',
+                             c.querySelector('.cbody')?.textContent || '');
+      }
       if (a === 'show-quiet') { Widgets.showQuiet = !Widgets.showQuiet; return renderWidgets(); }
       if (a === 'goals-jump') { setDocked('right', false); return setTimeout(() => $('[data-w="goals"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 380); }
       if (a === 'google') return window.open('/oauth/start', '_blank', 'noopener');
@@ -1367,6 +1376,7 @@ function bindUI() {
     if (na) {
       if (na.dataset.nodeAct === 'ask') return ask(`What's in my note "${na.dataset.title}", and what does it connect to?`);
       if (na.dataset.nodeAct === 'trace') return caption('Shift-click another memory in the matrix to trace the path to it', 'dim');
+      if (na.dataset.nodeAct === 'prompter' && lastNote) return Prompter.open(lastNote.title, lastNote.text);
     }
     if (e.target.closest('a')) return;
     const byId = e.target.closest('[data-id]');
@@ -1401,6 +1411,8 @@ function bindUI() {
   bindParallax();
   bindPalette();
   bindSheets();
+  Prompter.bind();
+  Board.bind();
   setInterval(tickToday, 1000);
   new MutationObserver(() => setTimeout(measureInsets, 30)).observe($('#convo'), { attributes: true, attributeFilter: ['hidden'] });
   let saved = 'violet';
@@ -1461,6 +1473,7 @@ function bindUI() {
       Graph.highlight(null); Graph.clear();
     }
     else if ((e.key === 'f' || e.key === 'F') && !inField) Graph.fit();
+    else if ((e.key === 'p' || e.key === 'P') && !inField && !e.ctrlKey && !e.metaKey) Board.open();
   });
 }
 
@@ -1731,6 +1744,14 @@ function bindWidgets() {
       saveWidgetPref(); renderWidgets();
       return;
     }
+    const ck = e.target.closest('[data-ck]');
+    if (ck && !Widgets.editing) {
+      ck.classList.toggle('done');
+      try { Widgets.data = await post('/api/checklist', { key: ck.dataset.ck, done: ck.dataset.done !== '1' }); }
+      catch (err) { banner(`Couldn't tick that: ${err.message}`); }
+      if (Widgets.data?.trading?.checklist?.complete && ck.dataset.done !== '1') toast('Checklist done. Logged in today\'s journal. Trade well.');
+      return renderWidgets();
+    }
     const g = e.target.closest('[data-goal]');
     if (g && !Widgets.editing) {
       g.classList.toggle('done');                     // feels instant; the server's answer redraws it
@@ -1804,7 +1825,9 @@ function renderToday() {
   const d = Widgets.data, box = $('#today');
   if (!d || !box) return;
   const goals = d.goals || [], done = goals.filter(x => x.done).length;
-  const rows = [sessionLine(d.session), newsLine(d.session),
+  const sl = sessionLine(d.session), cl = d.trading?.checklist, ph = sessionPhase(d.session).phase;
+  if (cl && (ph === 'before' || ph === 'live') && !cl.complete) sl.sub = `Checklist ${cl.done}/${cl.total} · ${sl.sub}`;
+  const rows = [sl, newsLine(d.session),
     d.next && !d.next.error ? { k: 'Next up', v: d.next.title, sub: d.next.when, cls: '' } : { k: 'Next up', v: 'Calendar clear', sub: 'Nothing in the next two days', cls: 'dim' },
     { k: 'Goals', v: goals.length ? `${done} of ${goals.length} done` : 'None set', sub: goals.length ? '' : 'Add one on the right, or tell me', cls: goals.length && done === goals.length ? 'done' : '',
       meter: goals.length ? done / goals.length : null, act: 'goals-jump' }].filter(Boolean);
@@ -1849,9 +1872,15 @@ function wTrading(d) {
     `<li class="${e.red ? 'red' : ''}"><time>${esc(e.time)}${e.red ? ` · no trades ${ukAt(e.at - buf)}–${ukAt(e.at + buf)}` : ''}</time>${esc(e.currency)} ${esc(e.title)}</li>`).join('');
   const risk = (t.risk || []).map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join('');
   const prog = ev.target && ev.pnl != null ? Math.max(0, Math.min(1, ev.pnl / ev.target)) : null;
+  const cl = t.checklist;
+  const checks = cl ? `<div class="checks"><div class="checks-h"><span>Pre-session checklist</span><b class="${cl.complete ? 'pos' : ''}">${cl.complete ? `done ${esc(cl.done_at || '')}` : `${cl.done}/${cl.total}`}</b></div>
+    ${cl.items.map(i => `<div class="goal ${i.done ? 'done' : ''}" data-ck="${esc(i.key)}" data-done="${i.done ? 1 : 0}" tabindex="0" role="checkbox" aria-checked="${i.done}">
+      <span class="box" aria-hidden="true"></span><span class="gt">${esc(i.text)}</span></div>`).join('')}
+    ${cl.complete ? '' : '<button class="link" data-ck="all" data-done="0">tick all</button>'}</div>` : '';
   return { badge: tradePref === 'auto' ? 'auto' : 'pinned',
     html: `<div class="big" id="trade-clock">${esc(sessionLine(s).k)} · ${esc(sessionLine(s).v)}</div>
       ${events ? `<ol class="stream news">${events}</ol>` : '<div class="sub">No key news left today.</div>'}
+      ${checks}
       ${risk ? `<div class="rules">${risk}</div>` : '<div class="sub">Risk Rules are blank. Fill them in and I will keep them here.</div>'}
       ${ev.balance != null ? `<div class="evalp"><span>Eval</span><b class="${ev.pnl < 0 ? 'neg' : 'pos'}">${ev.pnl != null ? money(ev.pnl) : ''}</b>
         <span>${money(ev.balance)}${ev.target ? ` · target +${money(ev.target)}` : ''}</span></div>
@@ -1922,6 +1951,10 @@ const COMMANDS = [
   { t: 'What should I film?', k: 'content tiktok video', run: () => ask('What should I film this week?') },
   { t: 'Who should I chase?', k: 'outreach prospects leads', run: () => ask('Who should I chase?') },
   { t: 'My reminders', k: 'alarms nudges scheduled', run: () => ask('What reminders do I have?') },
+  { t: 'Prospect board', k: 'pipeline leads clients crm kanban', hint: 'P', run: () => Board.open() },
+  { t: 'Pre-session checklist', k: 'trading ready rules checklist', run: () => ask('Run my pre-session checklist.', { speak: Voice.on && !Voice.muted }) },
+  { t: 'Teleprompter: script on the clipboard', k: 'prompter autocue record voiceover read paste', run: async () => {
+      try { Prompter.open('From the clipboard', await navigator.clipboard.readText()); } catch { toast('Copy the script first, then try again.', 'warn'); } } },
   { t: 'Memory', k: 'what you remember facts', run: showMemory },
   { t: 'Spend', k: 'cost money api usage budget', run: showSpend },
   { t: 'Set me up', k: 'interview missing gaps', run: () => ask("Set me up: interview me about what you're missing.", { speak: Voice.on && !Voice.muted }) },
@@ -1947,7 +1980,7 @@ const palLabel = c => (typeof c.t === 'function' ? c.t() : c.t);
 function palRender() {
   const q = $('#pal-q').value.trim().toLowerCase();
   const words = q.split(/\s+/).filter(Boolean);
-  Pal.items = COMMANDS.filter(c => words.every(w => (palLabel(c) + ' ' + c.k).toLowerCase().includes(w)));
+  Pal.items = [...COMMANDS, ...scriptCommands()].filter(c => words.every(w => (palLabel(c) + ' ' + c.k).toLowerCase().includes(w)));
   if (q) Pal.items.push({ t: `Ask JARVIS: “${$('#pal-q').value.trim()}”`, ask: true, run: () => ask($('#pal-q').value) });
   Pal.sel = Math.min(Pal.sel, Pal.items.length - 1);
   $('#pal-list').innerHTML = Pal.items.map((c, i) => `<li role="option" id="pal-${i}" aria-selected="${i === Pal.sel}" data-i="${i}" class="${c.ask ? 'ask' : ''}">
@@ -2001,3 +2034,225 @@ function closeSheets() {
   document.querySelectorAll('.panel.sheet').forEach(p => p.classList.remove('sheet'));
   document.querySelectorAll('[data-sheet]').forEach(b => b.removeAttribute('aria-pressed'));
 }
+
+// ---------------------------------------------------------------- teleprompter
+// Full screen, auto-scrolling at a words-per-minute pace, with a reading band a third of the way down.
+// Keys: Space start/pause · ↑↓ speed · ← back a line · → skip · - = text size · M mirror · Esc close.
+// Voice control (browser speech recognition) only obeys a single command word said on its own.
+function scriptCommands() {
+  return (GRAPH?.nodes || []).filter(n => n.type === 'script' || /\/Scripts\//.test(n.rel || '')).slice(-8).reverse()
+    .map(n => ({ t: `Teleprompter: ${n.title}`, k: 'prompter autocue record script voiceover', run: async () => {
+      try { const note = await api(`/api/note?id=${n.id}`); Prompter.open(note.title, note.text); } catch (e) { banner(`Couldn't open it: ${e.message}`); }
+    } }));
+}
+const PROMPT_PREF = 'jarvis.prompter';
+const Prompter = {
+  wpm: 150, size: 44, mirror: false, playing: false, y: 0, last: 0, pxPerWord: 1, raf: 0, rec: null, voice: false,
+  load() { try { Object.assign(this, JSON.parse(localStorage.getItem(PROMPT_PREF) || '{}')); } catch {} },
+  save() { try { localStorage.setItem(PROMPT_PREF, JSON.stringify({ wpm: this.wpm, size: this.size, mirror: this.mirror })); } catch {} },
+  // Script cards are "OPEN (0-3s) / BEAT n / CLOSE / NOTES" blocks; notes are markdown. Spoken lines only.
+  parse(text) {
+    const out = [];
+    let skip = false;
+    for (const raw of String(text || '').replace(/^---[\s\S]*?---\s*/, '').split('\n')) {
+      const l = raw.trim();
+      if (!l) continue;
+      if (/^(NOTES|## ?Notes)\b/i.test(l)) { skip = true; continue; }
+      if (/^(OPEN|BEAT \d+|CLOSE|HOOK|CTA)\b.*$/i.test(l) || /^#{1,6} /.test(l)) {
+        skip = false;
+        const lab = l.replace(/^#+ /, '');
+        if (!/^# /.test(l) || out.length) out.push({ label: lab });
+        continue;
+      }
+      if (skip) continue;
+      out.push({ line: l.replace(/^[-*] /, '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (_, a, __, b) => b || a) });
+    }
+    return out;
+  },
+  open(title, text) {
+    const parts = this.parse(text);
+    if (!parts.some(p => p.line)) return toast('Nothing to read in that script.', 'warn');
+    this.load();
+    $('#pr-title').textContent = title;
+    $('#pr-text').innerHTML = parts.map(p => p.label ? `<h6>${esc(p.label)}</h6>` : `<p>${esc(p.line)}</p>`).join('');
+    const words = parts.reduce((n, p) => n + (p.line ? p.line.split(/\s+/).length : 0), 0);
+    this.words = words;
+    const box = $('#prompter');
+    box.hidden = false;
+    document.body.classList.add('prompting');
+    this.apply();
+    this.y = 0; this.render();
+    this.playing = false; $('#pr-play').textContent = 'Start';
+    $('#pr-play').focus();
+    if (Voice.on && Voice.state === 'speaking') interrupt();
+  },
+  close() {
+    this.pause(); this.voiceOff();
+    $('#prompter').hidden = true;
+    document.body.classList.remove('prompting');
+  },
+  apply() {
+    const t = $('#pr-text'), stage = $('#pr-stage');
+    t.style.fontSize = this.size + 'px';
+    // the reading band sits a third of the way down; the first line starts in it, the last one ends in it
+    this.padTop = Math.round(stage.clientHeight * 0.3);
+    t.style.paddingTop = this.padTop + 'px';
+    t.style.paddingBottom = Math.round(stage.clientHeight * 0.7) + 'px';
+    const band = document.querySelector('.pr-band');
+    band.style.height = (this.size * 1.7) + 'px';
+    $('#prompter').classList.toggle('mirror', this.mirror);
+    $('#pr-mirror').setAttribute('aria-pressed', String(this.mirror));
+    $('#pr-wpm').textContent = `${this.wpm} wpm`;
+    // pixels per spoken word, from the laid-out text: the pace stays right at any text size
+    requestAnimationFrame(() => {
+      const first = t.querySelector('p');                   // the band sits on the first spoken line
+      band.style.top = (stage.offsetTop + (first ? first.offsetTop : this.padTop) - this.size * 0.12) + 'px';
+      this.pxPerWord = Math.max(1, this.maxY() / Math.max(1, this.words));
+      const secs = Math.round(this.words / this.wpm * 60);
+      $('#pr-time').textContent = `${this.words} words · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} at this pace`;
+    });
+    this.save();
+  },
+  maxY() {                                               // scrolled far enough that the last line is in the band
+    const ps = $('#pr-text').querySelectorAll('p');
+    return ps.length ? Math.max(0, ps[ps.length - 1].offsetTop - ps[0].offsetTop) : 0;
+  },
+  render() {
+    const max = this.maxY();
+    this.y = Math.max(0, Math.min(this.y, max));
+    $('#pr-text').style.transform = `translateY(${-this.y}px)`;
+    if (this.y >= max && this.playing) { this.pause(); $('#pr-play').textContent = 'Again'; }
+  },
+  tick(t) {
+    if (!this.playing) return;
+    const dt = Math.min(0.1, (t - (this.last || t)) / 1000);
+    this.last = t;
+    this.y += dt * this.wpm / 60 * this.pxPerWord;
+    this.render();
+    this.raf = requestAnimationFrame(x => this.tick(x));
+  },
+  async play() {
+    if (this.playing) return;
+    if ($('#pr-play').textContent === 'Again') { this.y = 0; this.render(); }
+    if (this.y === 0) {                                     // a 3-2-1 before the first line
+      const c = $('#pr-count');
+      c.hidden = false;
+      for (const n of [3, 2, 1]) { c.textContent = n; await new Promise(r => setTimeout(r, 700)); if ($('#prompter').hidden) return; }
+      c.hidden = true;
+    }
+    this.playing = true; this.last = 0;
+    $('#pr-play').textContent = 'Pause';
+    this.raf = requestAnimationFrame(x => this.tick(x));
+  },
+  pause() { this.playing = false; cancelAnimationFrame(this.raf); if (!$('#prompter').hidden) $('#pr-play').textContent = 'Resume'; },
+  toggle() { this.playing ? this.pause() : this.play(); },
+  speed(d) { this.wpm = Math.max(60, Math.min(260, this.wpm + d)); this.apply(); },
+  back(lines = 1) { this.y -= this.size * 1.55 * lines; this.render(); },
+  resize(d) { const frac = this.y / Math.max(1, $('#pr-text').scrollHeight); this.size = Math.max(24, Math.min(96, this.size + d)); this.apply();
+              requestAnimationFrame(() => { this.y = frac * $('#pr-text').scrollHeight; this.render(); }); },
+  voiceOn() {
+    if (!SR) return toast('Voice control needs Chrome speech recognition.', 'warn');
+    const r = this.rec = new SR();
+    r.continuous = true; r.interimResults = false; r.lang = 'en-GB';
+    r.onresult = e => {
+      const said = e.results[e.results.length - 1][0].transcript.trim().toLowerCase().replace(/[^a-z ]/g, '');
+      const cmd = { slower: () => this.speed(-15), faster: () => this.speed(15), back: () => this.back(2), pause: () => this.pause(),
+                    stop: () => this.pause(), go: () => this.play(), resume: () => this.play(), start: () => this.play() }[said];
+      if (cmd) { cmd(); caption(`Teleprompter: ${said}`, 'dim'); }
+    };
+    r.onend = () => { if (this.voice) try { r.start(); } catch {} };
+    try { r.start(); this.voice = true; $('#pr-voice').setAttribute('aria-pressed', 'true'); } catch { toast("Couldn't start voice control.", 'warn'); }
+  },
+  voiceOff() { this.voice = false; try { this.rec?.stop(); } catch {} this.rec = null; $('#pr-voice').setAttribute('aria-pressed', 'false'); },
+  bind() {
+    $('#pr-play').addEventListener('click', () => this.toggle());
+    $('#pr-slower').addEventListener('click', () => this.speed(-10));
+    $('#pr-faster').addEventListener('click', () => this.speed(10));
+    $('#pr-back').addEventListener('click', () => this.back());
+    $('#pr-small').addEventListener('click', () => this.resize(-4));
+    $('#pr-big').addEventListener('click', () => this.resize(4));
+    $('#pr-mirror').addEventListener('click', () => { this.mirror = !this.mirror; this.apply(); });
+    $('#pr-voice').addEventListener('click', () => (this.voice ? this.voiceOff() : this.voiceOn()));
+    $('#pr-close').addEventListener('click', () => this.close());
+    $('#pr-stage').addEventListener('wheel', e => { e.preventDefault(); this.y += e.deltaY * 0.6; this.render(); }, { passive: false });
+    // while it's open, its keys win over JARVIS's own shortcuts
+    window.addEventListener('keydown', e => {
+      if ($('#prompter').hidden) return;
+      const k = e.key, onBtn = document.activeElement?.tagName === 'BUTTON' && document.activeElement !== $('#pr-play');
+      const act = { ' ': () => this.toggle(), ArrowUp: () => this.speed(10), ArrowDown: () => this.speed(-10), ArrowLeft: () => this.back(),
+                    ArrowRight: () => { this.y += this.size * 1.55; this.render(); }, '-': () => this.resize(-4), '=': () => this.resize(4),
+                    '+': () => this.resize(4), m: () => { this.mirror = !this.mirror; this.apply(); }, Escape: () => this.close() }[k.length === 1 ? k.toLowerCase() : k];
+      if (!act || (onBtn && (k === ' ' || k === 'Enter'))) return;
+      e.preventDefault(); e.stopImmediatePropagation(); act();
+    }, true);
+    addEventListener('resize', () => { if (!$('#prompter').hidden) this.apply(); });
+  },
+};
+
+// ---------------------------------------------------------------- prospect board
+// Columns are the pipeline stages. Drag a card to move it, or use its Move menu (keyboard). A move is the
+// same as saying "mark Cobalt as contacted": it's logged, and "contacted" sets the 3-day follow-up nudge.
+const Board = {
+  data: null, dragging: null,
+  async open() {
+    const d = $('#board');
+    if (!d.open) d.showModal();
+    $('#board-cols').innerHTML = '<div class="board-empty"><span class="skel" style="width:60%"></span></div>';
+    try { this.data = await api('/api/pipeline'); } catch (e) { $('#board-cols').innerHTML = `<div class="board-empty">Couldn't load prospects: ${esc(e.message)}</div>`; return; }
+    this.render();
+  },
+  render() {
+    const { stages, prospects } = this.data;
+    $('#board-count').textContent = prospects.length ? `· ${prospects.length}` : '';
+    if (!prospects.length) {
+      $('#board-cols').innerHTML = `<div class="board-empty">No prospects yet. Tell me a niche and a town, or
+        <button class="btn primary" data-board="find">Find prospects</button></div>`;
+      return;
+    }
+    const opts = cur => stages.map(s => `<option value="${esc(s)}" ${s === cur ? 'selected' : ''}>${esc(s)}</option>`).join('');
+    $('#board-cols').innerHTML = stages.map(s => {
+      const cards = prospects.filter(p => p.stage === s);
+      return `<section class="bcol ${s === 'lost' ? 'lost' : ''} ${s === 'won' ? 'won' : ''}" data-stage="${esc(s)}" aria-label="${esc(s)}">
+        <h3>${esc(s)} <span>${cards.length}</span></h3>
+        ${cards.map(p => `<article class="bcard" draggable="true" data-title="${esc(p.title)}">
+          <button class="bt" data-board-open="${p.id}">${esc(p.title)}</button>
+          <div class="bm">${esc([p.location, p.niche].filter(Boolean).join(' · ') || p.website || '')}</div>
+          ${p.why ? `<div class="bw">${esc(p.why)}</div>` : ''}
+          <div class="bf"><span class="${p.stage === 'contacted' && p.days >= 3 ? 'late' : ''}">${p.days ? `${p.days}d here` : 'today'}</span>
+            <select aria-label="Move ${esc(p.title)} to" data-board-move="${esc(p.title)}">${opts(p.stage)}</select></div>
+        </article>`).join('') || '<div class="bnone">—</div>'}
+      </section>`;
+    }).join('');
+  },
+  async move(title, stage) {
+    try {
+      const r = await post('/api/pipeline', { title, stage });
+      this.data = r; this.render();
+      toast(r.say || `Moved ${title} to ${stage}.`, r.error ? 'warn' : '');
+      refreshWidgets();
+    } catch (e) { toast(`Couldn't move it: ${e.message}`, 'warn'); }
+  },
+  bind() {
+    const d = $('#board');
+    $('#board-close').addEventListener('click', () => d.close());
+    $('#board-find').addEventListener('click', () => { d.close(); openPalette(); $('#pal-q').value = 'Find me five '; palRender(); });
+    d.addEventListener('click', e => {
+      if (e.target === d) return d.close();
+      const o = e.target.closest('[data-board-open]');
+      if (o) { d.close(); Graph.setFocus(+o.dataset.boardOpen); return; }
+      if (e.target.closest('[data-board="find"]')) { d.close(); openPalette(); $('#pal-q').value = 'Find me five '; palRender(); }
+    });
+    d.addEventListener('change', e => { const s = e.target.closest('[data-board-move]'); if (s) this.move(s.dataset.boardMove, s.value); });
+    d.addEventListener('dragstart', e => { const c = e.target.closest('.bcard'); if (c) { this.dragging = c.dataset.title; c.classList.add('drag'); e.dataTransfer.effectAllowed = 'move'; } });
+    d.addEventListener('dragend', e => { e.target.closest('.bcard')?.classList.remove('drag'); d.querySelectorAll('.bcol.over').forEach(x => x.classList.remove('over')); });
+    d.addEventListener('dragover', e => { const col = e.target.closest('.bcol'); if (col && this.dragging) { e.preventDefault(); d.querySelectorAll('.bcol.over').forEach(x => x !== col && x.classList.remove('over')); col.classList.add('over'); } });
+    d.addEventListener('drop', e => {
+      const col = e.target.closest('.bcol');
+      if (!col || !this.dragging) return;
+      e.preventDefault();
+      const p = this.data.prospects.find(x => x.title === this.dragging);
+      if (p && p.stage !== col.dataset.stage) this.move(p.title, col.dataset.stage);
+      this.dragging = null;
+    });
+  },
+};
