@@ -25,6 +25,7 @@ FAILOVER = [m.strip() for m in os.environ.get("JARVIS_FAILOVER", "openrouter:ope
 FALLBACK_BETA = "server-side-fallback-2026-07-01"    # re-runs a declined request on Anthropic's recommended model
 
 _state = {"status": "unchecked", "detail": "", "error_at": 0.0}
+_notices = []             # recent failovers, shown by the page as a notice: {id, at, text}
 _no_fallbacks = set()     # models this account can't use the fallback beta on
 RETRY_AFTER = 60          # seconds before trying the model again after a hard failure
 
@@ -44,6 +45,10 @@ def _usable(model):
     return is_openrouter(model) or _state["status"] != "error" or time.time() - _state["error_at"] > RETRY_AFTER
 
 
+def _label(model):
+    return str(model).split("/")[-1].replace("claude-", "").replace("openrouter:", "")
+
+
 def available():
     return any(_usable(m) for m in [MODEL] + FAILOVER)
 
@@ -54,6 +59,7 @@ def _fail(detail):
 
 def status():
     info = {"model": MODEL, "fast_model": FAST_MODEL if ROUTING != "off" else None,
+            "notices": [n for n in _notices if time.time() - n["at"] < 600],
             "failover": [m for m in FAILOVER if _has_key(m)]}
     if not any(_has_key(m) for m in [MODEL] + FAILOVER):
         return {"state": "missing", "detail": "No API key in .env (ANTHROPIC_API_KEY or OPENROUTER_API_KEY)", **info}
@@ -137,6 +143,9 @@ def _with_failover(model, run, said=None):
             if not backups or said or "malformed" in str(e):
                 raise
             print(f"[llm] {model} failed ({e}); trying {backups[0]}", flush=True)
+            _notices.append({"id": f"{time.time():.3f}", "at": time.time(),
+                             "text": f"{_label(model)} didn't answer ({str(e)[:80]}). Switched to {_label(backups[0])}."})
+            del _notices[:-5]
             model, backups = backups[0], backups[1:]
 
 

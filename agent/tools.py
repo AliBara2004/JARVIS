@@ -678,11 +678,57 @@ def widgets():
     except Exception as e:
         items = [{"text": f"(can't read today's note: {e})", "done": False}]
     u = usage.summary()
-    return {"date": clock.uk_today().isoformat(), "goals": items,
+    return {"date": clock.uk_today().isoformat(), "goals": items, "session": _session_widget(), "trading": _trading_widget(),
             "training": fitness.summary(), "next": _next_event(), "activity": activity(),
             "reminders": [{"text": i["text"], "when": reminders.describe(i)} for i in reminders.upcoming(4)],
             "spend": {"usd": round(u["today"]["usd"], 2), "budget": u["budget_usd"],
                       "models": {m: round(v["usd"], 2) for m, v in u["today"].get("models", {}).items()}}}
+
+
+def _session_widget():
+    """The NY open (as a UTC timestamp the page counts down to) and today's key news, from the cached
+    Forex Factory calendar. Never raises: a calendar outage just leaves the news out."""
+    today = clock.uk_today()
+    out = {"weekday": today.weekday() < 5, "open": None, "before_min": SESSION_BEFORE_MIN,
+           "after_min": SESSION_AFTER_MIN, "buffer_min": None, "events": [], "error": None}
+    if out["weekday"]:
+        o = clock.ny_open_uk(today)
+        out["open"] = (o - dt.timedelta(hours=clock.uk_offset(clock.utcnow()))).replace(tzinfo=dt.timezone.utc).timestamp()
+    try:
+        out["buffer_min"] = _news_buffer_min()
+        for e in _key_events(market.calendar(today)):
+            at = (e["at"] - dt.timedelta(hours=clock.uk_offset(clock.utcnow()))).replace(tzinfo=dt.timezone.utc).timestamp()
+            out["events"].append({"at": at, "time": e["time"], "currency": e["currency"], "title": e["title"],
+                                  "red": e["impact"] == "High"})
+    except Exception as e:           # MarketError, or no network: the strip still shows the session
+        out["error"] = str(e)[:120]
+    return out
+
+
+def _bullets(title):
+    """'- Key: value' lines from a note, skipping blanks he hasn't filled in yet ("$", "___")."""
+    n = _note(title)
+    rows = []
+    for m in re.finditer(r"(?m)^[ \t]*[-*][ \t]+([^:\n]{2,40}):[ \t]*(.*)$", n.text if n else ""):
+        k, v = m.group(1).strip(), m.group(2).strip()
+        if re.sub(r"[$_\s£]", "", v):
+            rows.append([k, v])
+    return rows
+
+
+def _trading_widget():
+    """Risk rules and eval progress, straight from his notes (Trading/Risk Rules, Trading/Eval)."""
+    ev = dict((k.lower(), v) for k, v in _bullets("Eval"))
+    money = lambda s: float(re.sub(r"[^\d.]", "", s)) if s and re.search(r"\d", s) else None
+    start = None
+    n = _note("Eval")
+    m = re.search(r"(\d+)\s*[kK]\b", n.text) if n else None
+    if m:
+        start = float(m.group(1)) * 1000
+    bal, target = money(ev.get("current balance")), money(ev.get("profit target"))
+    return {"risk": _bullets("Risk Rules"),
+            "eval": {"start": start, "balance": bal, "target": target,
+                     "pnl": round(bal - start, 2) if bal is not None and start else None}}
 
 
 def set_goal(index, done):

@@ -177,6 +177,29 @@ def _load_history():
 _load_history()
 
 
+def transcript():
+    """The saved turns as [{you, jarvis}] for the page: bracketed context lines stripped, text only."""
+    out = []
+    with _lock:
+        turns = list(_history)
+    for t in turns:
+        if not t:
+            continue
+        u = t[0].get("content")
+        u = u if isinstance(u, str) else " ".join(b.get("text", "") for b in u if isinstance(b, dict) and b.get("type") == "text")
+        u = "\n".join(l for l in u.splitlines() if not re.match(r"^\s*\[.*\]\s*$", l)).strip()
+        said = ""
+        for m in reversed(t):
+            if m.get("role") == "assistant":
+                c = m.get("content")
+                said = c if isinstance(c, str) else "".join(b.get("text", "") for b in c if b.get("type") == "text")
+                if said.strip():
+                    break
+        if u or said:
+            out.append({"you": u, "jarvis": re.sub(r"\n\n\(Result: .*$", "", said.strip(), flags=re.S)})
+    return out
+
+
 def reset():
     with _lock:
         _history.clear()

@@ -7,6 +7,7 @@ lives in the prompt shows up here as a gap. Server checks run if JARVIS is up.
 """
 import http.client
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -29,6 +30,9 @@ import status  # noqa: E402
 import tools  # noqa: E402
 
 ROOT = data.ROOT
+# brain.reset() saves the (empty) conversation: never over Ali's real one
+import tempfile as _tmp  # noqa: E402
+brain.CONVO_FILE = pathlib.Path(_tmp.gettempdir()) / "jarvis_selftest_conversation.json"
 AGENT = sorted((ROOT / "agent").glob("*.py"))
 UI = [p for p in (ROOT / "ui").glob("*") if p.suffix in (".js", ".html", ".css")]
 results = []

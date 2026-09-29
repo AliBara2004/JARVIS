@@ -67,7 +67,17 @@ Use `…` not `...`, and loading text ends in `…`. Headings may carry the fain
   confirmation, rose = error. Rows use `.rtag` (tiny mono tag) + text + mono meta on the right.
 - **Console** (`#ask`): the one fully rounded element — a pill with a slowly rotating conic gradient border,
   mic orb on the left, Execute on the right. Shortcut pills sit under it in a gentle arc.
-- **Conversation** (`.convo`): angled glass card projected out of the core, with a beam back toward it.
+- **Conversation** (`.convo`): angled glass card projected out of the core, with a beam back toward it. A
+  scrolling log (40 exchanges, earlier turns reloaded from the server and dimmed), YOU / JARVIS labels, and
+  copy / read-aloud links that appear on hover.
+- **Today strip** (`.today` / `.trow`): the left deck's lead: NY session countdown, next key news (rose when
+  it's inside the no-trade window), next calendar event, goals. Hairline-separated rows, mono key, display value.
+- **Command palette** (`#palette`, Ctrl K): native `<dialog>`, fuzzy word match over commands, anything else
+  becomes "Ask JARVIS". New features get a palette entry, not another button.
+- **Notice** (`.toast`): top right, under the telemetry bar. Violet = info, rose = warning (failover), pink =
+  reminder. Auto-dismiss, paused on hover, `aria-live="polite"`.
+- **Skeleton** (`.skel`): shimmering bars where data will land; never show "—" placeholders.
+- **Quiet line** (`.quiet-line`): empty widgets fold into one dashed row ("Nothing yet in …"), tap to show.
 
 ## 5. Layout
 
@@ -75,6 +85,12 @@ Full-screen canvas; everything else is `position: fixed` on top of it: telemetry
 (system / inspector / hubs), right deck (widgets / filters), console (bottom centre, ≤780px), scene controls
 (inside the right deck's edge). The graph is told the decks' insets so the core centres in the free space.
 16px gutters. Spacing steps are 4 / 6 / 8 / 10 / 14 / 16px. No nested boxes beyond deck → card → row.
+
+### Modes
+- **Trading** (`body.trading`): automatic from an hour before the NY open to 2½ hours after (or pinned via
+  the palette). The right deck leads with the Trading card (countdown, key news with no-trade windows, Risk
+  Rules, eval P&L) and drops Training and Activity.
+- **Focus** (`body.focus`): while voice is talking, the decks fade to 14% and blur; hover brings one back.
 
 ## 6. Depth & elevation
 
@@ -103,6 +119,8 @@ Don't
 
 - ≤1180px: decks narrow (270 / 260px), start docked, tilt off, model name hidden from telemetry.
 - ≤820px: telemetry shows only the wordmark side, scene controls hide, conversation spans the width.
+- ≤640px (phones): decks become bottom sheets opened from the Today / Widgets / Chat tabs above the console;
+  the telemetry bar keeps only the wordmark and data badge; Execute shrinks to its icon.
 - Phones: console respects `env(safe-area-inset-bottom)`; no zoom blocking.
 - Short screens (≤820px tall): top hubs show five rows so the inspector keeps room.
 
@@ -113,5 +131,6 @@ When asked to change the JARVIS UI:
    no frameworks, no build step, no CDN (everything is vendored).
 2. Reuse an existing component class before inventing one; new ones follow section 4's anatomy.
 3. Check in the real browser (Chrome) in all three themes, with the keyboard (Tab, Enter, Space, Esc), and
-   read the console for errors. Headless Chrome doesn't run the app's scripts reliably.
+   read the console for errors. For phone widths, drive headless Chrome over DevTools with
+   `Emulation.setDeviceMetricsOverride` (plain `--headless --screenshot` doesn't wait for the app to boot).
 4. Run `python agent/selftest.py` before committing.

@@ -12,7 +12,7 @@ const EXAMPLES = [
   'Find me five dental clinics that could use automation',
 ];
 const EXAMPLE_EVERY = 4000;
-const CONVO_KEEP = 8;            // exchanges kept on screen
+const CONVO_KEEP = 40;           // exchanges kept on screen (the log scrolls)
 const STATUS_EVERY_MS = 15000;   // how often to pick up model/voice status and vault changes
 
 // ---- voice tuning -----------------------------------------------------------
@@ -59,6 +59,7 @@ function banner(msg) {
 
 // ---------------------------------------------------------------- boot
 async function boot() {
+  startClocks();
   Graph = window.Graph3D || window.Graph2D;
   // The 3D files can be held back by a security scanner the first time (Norton on this PC). If we had
   // to fall back to 2D on a machine that can do WebGL, reload once: the next try usually gets through.
@@ -90,6 +91,7 @@ async function boot() {
   Graph.init($('#graph'), GRAPH, { onFocus: openNote, onPath: showPath });
   window.addEventListener('resize', measureInsets);
   bindUI();
+  loadHistory();
   // The model check runs in the background on the server; pick up its verdict.
   setTimeout(refreshStatus, 2500);
   window.addEventListener('focus', refreshStatus);
@@ -170,6 +172,7 @@ function renderStatus(s) {
                                : ['warn action', 'Telegram · pair', 'Click for your pairing code'], 'telegram-chip') : '') +
     chip(spend, 'spend-chip');
   $('#model-badge').hidden = s.model.state === 'ready' || s.model.state === 'unchecked';
+  for (const n of s.model.notices || []) if (!shownNotices.has(n.id)) { shownNotices.add(n.id); toast(n.text, 'warn', 9000); }
   const tips = { '#mic': 'Talk (Space). Esc to stop.', '#mute': 'Keep listening, stop speaking',
                  '#wake': 'Standby: say "Hey Jarvis" to start talking. Detected on this PC; nothing is sent until then.' };
   for (const id of Object.keys(tips)) {
@@ -390,6 +393,7 @@ function addExchange(text, quiet = false) {
   $('#convo-list').appendChild(ex);
   while ($('#convo-list').children.length > CONVO_KEEP) $('#convo-list').firstElementChild.remove();
   $('#convo-list').scrollTop = $('#convo-list').scrollHeight;
+  convoCount();
   return ex;
 }
 
@@ -406,6 +410,7 @@ function fillExchange(ex, r) {
   if (r.tools?.length) chips.push(['tools', r.tools.length]);
   if (notes.length) chips.push(['memories', notes.length]);
   j.innerHTML = `<p class="say">${esc(r.reply || '…')}</p>${tag}
+    ${r.reply ? `<div class="ex-act"><button class="link" data-action="copy-reply">copy</button><button class="link" data-action="say-again">read aloud</button></div>` : ''}
     ${chips.length ? `<div class="tele">${chips.map(([k, v]) => `<span>${k}<b>${esc(v)}</b></span>`).join('')}</div>` : ''}
     ${(r.cards || []).map(renderCard).join('')}`;
   if (notes.length) {
@@ -668,6 +673,7 @@ function rotatePlaceholder() {
 // The core lives in the 3D scene now; this just tells it (and the page) what JARVIS is doing.
 function setReactor(state, detail) {
   document.body.dataset.state = state;
+  applyFocus(state);
   const t = $('#t-state');
   t.dataset.state = state;
   t.textContent = { speaking: 'RESPONDING', memory: 'MEMORY' }[state] || state.toUpperCase();
@@ -1307,15 +1313,12 @@ function bindUI() {
   bindAttachments();
   bindWidgets();
   $('#ask').addEventListener('submit', e => { e.preventDefault(); ask($('#q').value); });
-  $('#brief').addEventListener('click', () => ask('Brief me.'));
-  $('#plan').addEventListener('click', () => ask('Plan my day.'));
-  $('#market').addEventListener('click', () => ask('Pre-session brief: news and markets.'));
-  $('#week').addEventListener('click', () => ask('Weekly review.'));
-  $('#memory').addEventListener('click', showMemory);
+  $('#cmd').addEventListener('click', openPalette);
   $('#new-chat').addEventListener('click', async () => {
     await post('/api/reset');
     $('#convo-list').innerHTML = '';
     $('#convo').hidden = true;
+    convoCount();
     Graph.highlight(null);
   });
   $('#hide-convo').addEventListener('click', collapseConvo);
@@ -1331,6 +1334,15 @@ function bindUI() {
         catch { act.textContent = 'Copy failed'; }
         return;
       }
+      if (a === 'copy-reply' || a === 'say-again') {
+        const text = act.closest('.jarvis')?.querySelector('.say')?.textContent || '';
+        if (a === 'say-again') { speechReset(); enqueueSpeech(text); return; }
+        try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast("Couldn't copy", 'warn'); }
+        return;
+      }
+      if (a === 'trading-brief') return ask('Pre-session brief: news and markets.');
+      if (a === 'show-quiet') { Widgets.showQuiet = !Widgets.showQuiet; return renderWidgets(); }
+      if (a === 'goals-jump') { setDocked('right', false); return setTimeout(() => $('[data-w="goals"]')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 380); }
       if (a === 'google') return window.open('/oauth/start', '_blank', 'noopener');
       if (a === 'setup') return ask("Set me up: interview me about what you're missing.", { speak: Voice.on && !Voice.muted });
       if (a === 'checkin-answer' || a === 'checkin-skip') return answerCheckin(a === 'checkin-answer', act);
@@ -1381,13 +1393,14 @@ function bindUI() {
     hiddenTypes.clear(); Graph.setHidden(hiddenTypes); renderFilters();
   });
   $('#fit').addEventListener('click', () => Graph.fit());
-  $('#fit2').addEventListener('click', () => Graph.fit());
   $('#zoom-in').addEventListener('click', () => Graph.zoom?.(0.8));
   $('#zoom-out').addEventListener('click', () => Graph.zoom?.(1.25));
   $('#lock').addEventListener('click', toggleLock);
   bindDecks();
-  startClocks();
   bindParallax();
+  bindPalette();
+  bindSheets();
+  setInterval(tickToday, 1000);
   new MutationObserver(() => setTimeout(measureInsets, 30)).observe($('#convo'), { attributes: true, attributeFilter: ['hidden'] });
   let saved = 'violet';
   try { saved = localStorage.getItem(THEME_PREF) || 'violet'; } catch {}
@@ -1423,7 +1436,7 @@ function bindUI() {
       e.preventDefault(); document.activeElement.click(); return;
     }
     const inField = typing || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
-    if ((e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('#q').focus(); }
+    if ((e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey)) { e.preventDefault(); openPalette(); }
     else if (e.key === '/' && !typing) { e.preventDefault(); $('#q').focus(); }
     else if (!inField && !e.ctrlKey && !e.metaKey && !e.altKey && ['1', '2', '3', '4'].includes(e.key)) toggleArea(+e.key);
     else if (!inField && (e.key === '+' || e.key === '=')) Graph.zoom?.(0.8);
@@ -1474,6 +1487,7 @@ function showAlerts(list) {
   const ex = addExchange('⏰ Reminder', true);
   fillExchange(ex, { reply: fresh.map(a => a.text).join(' · '), mode: 'direct', cards: [] });
   caption('⏰ ' + fresh[0].text, 'live');
+  fresh.forEach(a => toast('⏰ ' + a.text, 'alert', 12000));
   if (Voice.on && !busy && Voice.state !== 'speaking' && !Voice.muted) {
     speechReset();
     fresh.forEach(a => enqueueSpeech('Reminder. ' + a.text));
@@ -1515,7 +1529,7 @@ function bindParallax() {
 // Radial gauges: scene frame rate, and JARVIS's own process CPU and memory (from the server).
 function renderDiag() {
   const box = $('#diag');
-  if (!box) return;
+  if (!box || !$('#diag-sec').open) return;
   const proc = STATUS?.proc || {};
   const fps = Graph?.fps;
   const g = (label, val, max, text) => {
@@ -1552,7 +1566,7 @@ function bindDecks() {
   document.querySelectorAll('.dock [data-open]').forEach(b => b.addEventListener('click', () => {
     const panel = b.closest('.panel');
     setDocked(panel.id, false);
-    const target = { system: '#stats', inspector: '#inspector', hubs: '#hubs-sec', widgets: '.widgets', filters: '.filters' }[b.dataset.open];
+    const target = { today: '#today', inspector: '#inspector', hubs: '#hubs-sec', widgets: '.widgets', filters: '.filters' }[b.dataset.open];
     setTimeout(() => $(target)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 380);
   }));
 }
@@ -1602,16 +1616,18 @@ function uiTick() {
 const WIDGETS_EVERY_MS = 20000;
 const WIDGET_PREF = 'jarvis.widgets';
 const WIDGET_DEFS = {
-  goals:    { title: 'Today', render: wGoals },
+  trading:  { title: 'Trading', render: wTrading },
+  goals:    { title: 'Goals', render: wGoals },
   training: { title: 'Training', render: wTraining },
   next:     { title: 'Next up', render: wNext },
   spend:    { title: 'Cost & API', render: wSpend },
   activity: { title: 'Activity', render: wActivity },
   reminders: { title: 'Reminders', render: wReminders },
 };
-const Widgets = { data: null, editing: false, pref: { order: Object.keys(WIDGET_DEFS), hidden: [] } };
+const Widgets = { data: null, editing: false, showQuiet: false, pref: { order: Object.keys(WIDGET_DEFS), hidden: [] } };
 try { Object.assign(Widgets.pref, JSON.parse(localStorage.getItem(WIDGET_PREF) || '{}')); } catch {}
-for (const k of Object.keys(WIDGET_DEFS)) if (!Widgets.pref.order.includes(k)) Widgets.pref.order.push(k);
+for (const k of Object.keys(WIDGET_DEFS)) if (!Widgets.pref.order.includes(k)) Widgets.pref.order.unshift(k);
+const TRADING_HIDES = ['training', 'activity'];      // not now: the session is on
 
 function saveWidgetPref() { try { localStorage.setItem(WIDGET_PREF, JSON.stringify(Widgets.pref)); } catch {} }
 
@@ -1626,14 +1642,14 @@ function wGoals(d) {
 }
 function wTraining(d) {
   const t = d.training || {};
-  if (!t.total) return { html: '<div class="sub">Nothing logged yet. Tell me what you trained.</div>' };
+  if (!t.total) return { empty: true, html: '<div class="sub">Nothing logged yet. Tell me what you trained.</div>' };
   const last = t.last ? `${esc(t.last.title)} · ${t.last.days_ago === 0 ? 'today' : t.last.days_ago === 1 ? 'yesterday' : t.last.days_ago + ' days ago'}` : '';
   return { badge: `${t.day_streak}d streak`,
     html: `<div class="big">${t.this_week} this week</div><div class="sub">${t.week_streak}-week streak</div><div class="sub">Last: ${last}</div>` };
 }
 function wNext(d) {
   const n = d.next;
-  if (!n) return { html: '<div class="sub">Nothing on the calendar in the next two days.</div>' };
+  if (!n) return { empty: true, html: '<div class="sub">Nothing on the calendar in the next two days.</div>' };
   if (n.error) return { html: `<div class="sub">${esc(n.error)}</div>` };
   return { html: `<div class="big">${esc(n.when)}</div><div class="sub">${esc(n.title)}</div>` };
 }
@@ -1649,31 +1665,41 @@ function wSpend(d) {
 }
 function wReminders(d) {
   const r = d.reminders || [];
-  if (!r.length) return { html: '<div class="sub">Nothing scheduled. Say "remind me at 3 to…" or "nudge me if I haven&#39;t trained by 6".</div>' };
+  if (!r.length) return { empty: true, html: '<div class="sub">Nothing scheduled. Say "remind me at 3 to…" or "nudge me if I haven&#39;t trained by 6".</div>' };
   return { badge: `${r.length}`, html: `<ol class="stream">${r.map(x => `<li><time>${esc(x.when)}</time>${esc(x.text)}</li>`).join('')}</ol>` };
 }
 function wActivity(d) {
   const a = d.activity || [];
-  if (!a.length) return { html: '<div class="sub">Nothing yet. Notes JARVIS saves and pipeline moves show up here.</div>' };
+  if (!a.length) return { empty: true, html: '<div class="sub">Nothing yet. Notes JARVIS saves and pipeline moves show up here.</div>' };
   const now = Date.now() / 1000;
   const ago = t => { const m = Math.round((now - t) / 60); return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
-  return { badge: `${a.length}`, html: `<ol class="stream">${a.slice(0, 6).map(x =>
-    `<li class="${now - x.at < 3600 ? 'fresh' : ''}" ${x.note != null ? `data-id="${x.note}" tabindex="0" role="button"` : ''}><time>${ago(x.at)}</time>${esc(x.text)}</li>`).join('')}</ol>` };
+  const merged = [];                                  // the same thing twice in a row reads as one line, "×2"
+  for (const x of a) {
+    const last = merged[merged.length - 1];
+    if (last && last.text === x.text) last.n++; else merged.push({ ...x, n: 1 });
+  }
+  return { badge: `${a.length}`, html: `<ol class="stream">${merged.slice(0, 6).map(x =>
+    `<li class="${now - x.at < 3600 ? 'fresh' : ''}" ${x.note != null ? `data-id="${x.note}" tabindex="0" role="button"` : ''}><time>${ago(x.at)}</time>${esc(x.text)}${x.n > 1 ? ` <span class="times">×${x.n}</span>` : ''}</li>`).join('')}</ol>` };
 }
 
 function renderWidgets() {
   const box = $('#widgets'), d = Widgets.data;
   if (!d) return;
   const typing = document.activeElement?.id === 'goal-add' ? document.activeElement.value : null;
+  const trading = tradingOn(), quiet = [];
   box.innerHTML = Widgets.pref.order.map(k => {
     const def = WIDGET_DEFS[k], off = Widgets.pref.hidden.includes(k);
     if (!def || (off && !Widgets.editing)) return '';
+    if (!Widgets.editing && ((k === 'trading' && !trading) || (trading && TRADING_HIDES.includes(k)))) return '';
     const w = def.render(d);
-    return `<div class="widget ${off ? 'off' : ''}" data-w="${k}" draggable="${Widgets.editing}">
+    if (w.empty && !Widgets.editing && !Widgets.showQuiet) { quiet.push(def.title); return ''; }
+    return `<div class="widget ${off ? 'off' : ''} ${k === 'trading' ? 'trade' : ''}" data-w="${k}" draggable="${Widgets.editing}">
       <h4><span>${def.title}</span><span class="wctl"><button data-wmove="-1">↑</button><button data-wmove="1">↓</button>
         <button data-wtoggle>${off ? 'show' : 'hide'}</button></span>${w.badge && !Widgets.editing ? `<b>${esc(w.badge)}</b>` : ''}</h4>
       ${w.html}</div>`;
-  }).join('');
+  }).join('') + (quiet.length ? `<button class="quiet-line" data-action="show-quiet">Nothing yet in ${esc(quiet.join(', '))}<span>show</span></button>`
+                : Widgets.showQuiet ? '<button class="quiet-line" data-action="show-quiet">Fold empty widgets<span>hide</span></button>' : '');
+  renderToday();
   if (typing !== null) { const i = $('#goal-add'); if (i) { i.value = typing; i.focus(); } }
 }
 
@@ -1738,3 +1764,239 @@ function bindWidgets() {
 
 // graph3d.js is a module (it loads after this script): wait for it, but never more than 4s.
 Promise.race([window.graphReady || Promise.resolve(), new Promise(r => setTimeout(r, 4000))]).then(boot);
+
+// ---------------------------------------------------------------- Today strip
+// The NY session countdown, the next key news, the next calendar event and the goals, at a glance.
+// Data comes with the widgets read; the countdown ticks every second without asking the server.
+const NEWS_WARN_MIN = 15;                 // news this close counts as "hands off" when Risk Rules has no buffer
+function sessionPhase(s, now = Date.now() / 1000) {
+  if (!s?.weekday || !s.open) return { phase: 'weekend' };
+  if (now < s.open) return { phase: 'before', secs: s.open - now };
+  if (now < s.open + s.after_min * 60) return { phase: 'live', secs: now - s.open };
+  return { phase: 'after' };
+}
+const hm = secs => { const m = Math.floor(secs / 60), h = Math.floor(m / 60); return h ? `${h}h ${String(m % 60).padStart(2, '0')}m` : `${m}m`; };
+const hms = secs => { const s = Math.floor(secs), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60; return `${h}:${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+const ukAt = ts => new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' }).format(new Date(ts * 1000));
+
+function sessionLine(s) {
+  const p = sessionPhase(s);
+  if (p.phase === 'weekend') return { k: 'NY session', v: 'Weekend', sub: 'No session today', cls: '' };
+  if (p.phase === 'before') return { k: `NY open · ${ukAt(s.open)}`, v: `in ${p.secs < 3600 ? hms(p.secs).slice(2) : hm(p.secs)}`,
+                                     sub: p.secs < s.before_min * 60 ? 'Pre-session: check the news' : 'Countdown to the cash open', cls: p.secs < 900 ? 'soon' : '' };
+  if (p.phase === 'live') return { k: 'NY session', v: 'Live', sub: `${hm(p.secs)} since the open`, cls: 'live' };
+  return { k: 'NY session', v: 'Closed', sub: `Opened at ${ukAt(s.open)}`, cls: '' };
+}
+function newsLine(s, now = Date.now() / 1000) {
+  if (!s) return null;
+  if (s.error && !s.events.length) return { k: 'News', v: 'Calendar unavailable', sub: s.error, cls: '' };
+  const buf = (s.buffer_min || NEWS_WARN_MIN) * 60;
+  const hot = s.events.find(e => e.red && Math.abs(e.at - now) <= buf);
+  if (hot) return { k: 'News · hands off', v: `${hot.time} ${hot.currency} ${hot.title}`,
+                    sub: hot.at > now ? `in ${hm(hot.at - now)}` : `${hm(now - hot.at)} ago`, cls: 'red' };
+  const next = s.events.find(e => e.at > now);
+  if (!next) return { k: 'News', v: s.events.length ? 'No more key news today' : 'No key news today', sub: '', cls: '' };
+  return { k: next.red ? 'Next red folder' : 'Next USD news', v: `${next.time} ${next.currency} ${next.title}`,
+           sub: `in ${hm(next.at - now)}`, cls: next.red ? 'red-soft' : '' };
+}
+function renderToday() {
+  const d = Widgets.data, box = $('#today');
+  if (!d || !box) return;
+  const goals = d.goals || [], done = goals.filter(x => x.done).length;
+  const rows = [sessionLine(d.session), newsLine(d.session),
+    d.next && !d.next.error ? { k: 'Next up', v: d.next.title, sub: d.next.when, cls: '' } : { k: 'Next up', v: 'Calendar clear', sub: 'Nothing in the next two days', cls: 'dim' },
+    { k: 'Goals', v: goals.length ? `${done} of ${goals.length} done` : 'None set', sub: goals.length ? '' : 'Add one on the right, or tell me', cls: goals.length && done === goals.length ? 'done' : '',
+      meter: goals.length ? done / goals.length : null, act: 'goals-jump' }].filter(Boolean);
+  box.innerHTML = rows.map((r, i) => `<div class="trow ${r.cls}" ${r.act ? `data-action="${r.act}" role="button" tabindex="0"` : ''} data-row="${i}">
+      <span class="tk">${esc(r.k)}</span><b class="tv">${esc(r.v)}</b>${r.sub ? `<span class="ts">${esc(r.sub)}</span>` : ''}
+      ${r.meter != null ? `<span class="meter"><i style="width:${Math.round(r.meter * 100)}%"></i></span>` : ''}</div>`).join('');
+  applyTrading();
+}
+function tickToday() {                     // just the moving numbers, once a second
+  const d = Widgets.data;
+  if (!d?.session) return;
+  const put = (i, r) => { const el = $(`#today [data-row="${i}"]`); if (!el || !r) return;
+    el.className = `trow ${r.cls}`; el.querySelector('.tk').textContent = r.k; el.querySelector('.tv').textContent = r.v;
+    const ts = el.querySelector('.ts'); if (ts) ts.textContent = r.sub; };
+  put(0, sessionLine(d.session)); put(1, newsLine(d.session));
+  const tr = $('#trade-clock'); if (tr) { const r = sessionLine(d.session); tr.textContent = `${r.k} · ${r.v}`; }
+  if (tradingOn() !== document.body.classList.contains('trading')) { applyTrading(); renderWidgets(); }
+}
+
+// ---------------------------------------------------------------- trading mode
+// During the NY session (an hour before the open to 2½ hours after) the right panel leads with a Trading
+// card and drops training and activity. "auto" by default; the palette can pin it on or off.
+const TRADE_PREF = 'jarvis.trading';
+let tradePref = 'auto';
+try { tradePref = localStorage.getItem(TRADE_PREF) || 'auto'; } catch {}
+function tradingOn() {
+  if (tradePref !== 'auto') return tradePref === 'on';
+  const s = Widgets.data?.session, now = Date.now() / 1000;
+  return !!(s?.weekday && s.open && now >= s.open - s.before_min * 60 && now < s.open + s.after_min * 60);
+}
+function setTrading(mode) {
+  tradePref = mode;
+  try { localStorage.setItem(TRADE_PREF, mode); } catch {}
+  toast(`Trading mode: ${mode === 'auto' ? 'automatic (during the NY session)' : mode}`);
+  renderWidgets();
+}
+function applyTrading() { document.body.classList.toggle('trading', tradingOn()); }
+function wTrading(d) {
+  const s = d.session, t = d.trading || {}, now = Date.now() / 1000, buf = (s?.buffer_min || NEWS_WARN_MIN) * 60;
+  const ev = t.eval || {}, money = x => (x < 0 ? '−' : '') + '$' + Math.abs(x).toLocaleString('en-GB', { maximumFractionDigits: 0 });
+  const events = (s?.events || []).filter(e => e.at > now - buf).slice(0, 4).map(e =>
+    `<li class="${e.red ? 'red' : ''}"><time>${esc(e.time)}${e.red ? ` · no trades ${ukAt(e.at - buf)}–${ukAt(e.at + buf)}` : ''}</time>${esc(e.currency)} ${esc(e.title)}</li>`).join('');
+  const risk = (t.risk || []).map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join('');
+  const prog = ev.target && ev.pnl != null ? Math.max(0, Math.min(1, ev.pnl / ev.target)) : null;
+  return { badge: tradePref === 'auto' ? 'auto' : 'pinned',
+    html: `<div class="big" id="trade-clock">${esc(sessionLine(s).k)} · ${esc(sessionLine(s).v)}</div>
+      ${events ? `<ol class="stream news">${events}</ol>` : '<div class="sub">No key news left today.</div>'}
+      ${risk ? `<div class="rules">${risk}</div>` : '<div class="sub">Risk Rules are blank. Fill them in and I will keep them here.</div>'}
+      ${ev.balance != null ? `<div class="evalp"><span>Eval</span><b class="${ev.pnl < 0 ? 'neg' : 'pos'}">${ev.pnl != null ? money(ev.pnl) : ''}</b>
+        <span>${money(ev.balance)}${ev.target ? ` · target +${money(ev.target)}` : ''}</span></div>
+        ${prog != null ? `<div class="meter"><i style="width:${Math.round(prog * 100)}%"></i></div>` : ''}` : ''}
+      <button class="btn" data-action="trading-brief">Full market brief</button>` };
+}
+
+// ---------------------------------------------------------------- focus mode
+// While you're talking to JARVIS the panels step back; they come forward again on hover or when it's done.
+const FOCUS_PREF = 'jarvis.focus';
+let focusPref = 'auto';
+try { focusPref = localStorage.getItem(FOCUS_PREF) || 'auto'; } catch {}
+function applyFocus(state = document.body.dataset.state) {
+  const talking = Voice.on && ['listening', 'thinking', 'memory', 'speaking'].includes(state);
+  document.body.classList.toggle('focus', focusPref === 'on' || (focusPref === 'auto' && talking));
+}
+function setFocusPref(mode) {
+  focusPref = mode;
+  try { localStorage.setItem(FOCUS_PREF, mode); } catch {}
+  applyFocus();
+  toast(`Focus mode: ${mode === 'auto' ? 'while talking' : mode}`);
+}
+
+// ---------------------------------------------------------------- notices
+const shownNotices = new Set();
+function toast(text, kind = '', ms = 4500) {
+  const box = $('#toasts');
+  if (!box) return;
+  const t = document.createElement('div');
+  t.className = `toast ${kind}`;
+  t.innerHTML = `<span>${esc(text)}</span><button class="link" aria-label="Dismiss">✕</button>`;
+  const bye = () => { t.classList.add('out'); setTimeout(() => t.remove(), 250); };
+  t.querySelector('button').addEventListener('click', bye);
+  box.appendChild(t);
+  while (box.children.length > 4) box.firstElementChild.remove();
+  let timer = setTimeout(bye, ms);
+  t.addEventListener('mouseenter', () => clearTimeout(timer));          // hover keeps it while you read
+  t.addEventListener('mouseleave', () => { timer = setTimeout(bye, 2000); });
+}
+
+// ---------------------------------------------------------------- conversation history
+function convoCount() {
+  const n = $('#convo-list').querySelectorAll('.ex').length;
+  $('#convo-count').textContent = n ? `· ${n}` : '';
+}
+async function loadHistory() {
+  let turns = [];
+  try { turns = (await api('/api/history')).turns || []; } catch { return; }
+  if (!turns.length || $('#convo-list').children.length) return;
+  const list = $('#convo-list');
+  list.insertAdjacentHTML('beforeend', '<div class="earlier">Earlier · picked up from your last session</div>');
+  for (const t of turns.slice(-CONVO_KEEP)) {
+    const ex = document.createElement('div');
+    ex.className = 'ex old';
+    ex.innerHTML = `<div class="you">${esc(t.you || '…')}</div><div class="jarvis"><p class="say">${esc(t.jarvis || '')}</p>
+      <div class="ex-act"><button class="link" data-action="copy-reply">copy</button><button class="link" data-action="say-again">read aloud</button></div></div>`;
+    list.appendChild(ex);
+  }
+  convoCount();
+}
+
+// ---------------------------------------------------------------- command palette (Ctrl K)
+const COMMANDS = [
+  { t: 'Brief me', k: 'calendar unread slipped morning', run: () => ask('Brief me.') },
+  { t: 'Plan my day', k: 'five things money priorities', run: () => ask('Plan my day.') },
+  { t: 'Market brief', k: 'pre-session news red folders nq forex factory', run: () => ask('Pre-session brief: news and markets.') },
+  { t: 'Weekly review', k: 'week moved slipped', run: () => ask('Weekly review.') },
+  { t: 'What should I film?', k: 'content tiktok video', run: () => ask('What should I film this week?') },
+  { t: 'Who should I chase?', k: 'outreach prospects leads', run: () => ask('Who should I chase?') },
+  { t: 'My reminders', k: 'alarms nudges scheduled', run: () => ask('What reminders do I have?') },
+  { t: 'Memory', k: 'what you remember facts', run: showMemory },
+  { t: 'Spend', k: 'cost money api usage budget', run: showSpend },
+  { t: 'Set me up', k: 'interview missing gaps', run: () => ask("Set me up: interview me about what you're missing.", { speak: Voice.on && !Voice.muted }) },
+  { t: 'Conversation', k: 'chat history log show hide', hint: '3', run: () => toggleArea(3) },
+  { t: 'New chat', k: 'reset forget clear', run: () => $('#new-chat').click() },
+  { t: 'Screenshot', k: 'capture screen', run: screenshotSoon },
+  { t: 'Attach a file', k: 'upload pdf image photo', run: () => $('#file').click() },
+  { t: () => `Trading mode · ${tradePref}`, k: 'session nq trade mode risk eval', run: () => setTrading(tradePref === 'auto' ? 'on' : tradePref === 'on' ? 'off' : 'auto'), stay: true },
+  { t: () => `Focus mode · ${focusPref}`, k: 'calm hide panels talking', run: () => setFocusPref(focusPref === 'auto' ? 'on' : focusPref === 'on' ? 'off' : 'auto'), stay: true },
+  { t: 'Next theme', k: 'colour color violet amber cyan', hint: 'T', run: cycleTheme, stay: true },
+  { t: 'Toggle left panel', k: 'today inspector hubs deck', hint: '1', run: () => toggleArea(1) },
+  { t: 'Toggle right panel', k: 'widgets filters deck', hint: '2', run: () => toggleArea(2) },
+  { t: 'Toggle top bar', k: 'telemetry clocks', hint: '4', run: () => toggleArea(4) },
+  { t: 'Edit widgets', k: 'reorder show hide', run: () => { setDocked('right', false); $('#widgets-edit').click(); } },
+  { t: 'Diagnostics', k: 'fps cpu memory graph stats', run: () => { setDocked('left', false); const d = $('#diag-sec'); d.open = !d.open; renderDiag(); } },
+  { t: 'Fit the matrix', k: 'graph zoom reset view', hint: 'F', run: () => Graph.fit() },
+  { t: 'Lock the view', k: 'drift parallax', hint: 'L', run: toggleLock },
+  { t: 'Voice: choose fallback voice', k: 'speech browser', run: showVoicePicker },
+  { t: 'Telegram', k: 'phone pair', run: showTelegram },
+];
+const Pal = { sel: 0, items: [] };
+const palLabel = c => (typeof c.t === 'function' ? c.t() : c.t);
+function palRender() {
+  const q = $('#pal-q').value.trim().toLowerCase();
+  const words = q.split(/\s+/).filter(Boolean);
+  Pal.items = COMMANDS.filter(c => words.every(w => (palLabel(c) + ' ' + c.k).toLowerCase().includes(w)));
+  if (q) Pal.items.push({ t: `Ask JARVIS: “${$('#pal-q').value.trim()}”`, ask: true, run: () => ask($('#pal-q').value) });
+  Pal.sel = Math.min(Pal.sel, Pal.items.length - 1);
+  $('#pal-list').innerHTML = Pal.items.map((c, i) => `<li role="option" id="pal-${i}" aria-selected="${i === Pal.sel}" data-i="${i}" class="${c.ask ? 'ask' : ''}">
+      <span>${esc(palLabel(c))}</span>${c.hint ? `<kbd>${esc(c.hint)}</kbd>` : ''}</li>`).join('');
+  $('#pal-q').setAttribute('aria-activedescendant', Pal.items.length ? `pal-${Pal.sel}` : '');
+  $(`#pal-${Pal.sel}`)?.scrollIntoView({ block: 'nearest' });
+}
+function openPalette() {
+  const d = $('#palette');
+  if (d.open) return;
+  $('#pal-q').value = ''; Pal.sel = 0; palRender();
+  d.showModal();
+  $('#pal-q').focus();
+}
+function palRun(i) {
+  const c = Pal.items[i];
+  if (!c) return;
+  const text = $('#pal-q').value;
+  if (!c.stay) $('#palette').close();
+  c.run(text);
+  if (c.stay) palRender();
+}
+function bindPalette() {
+  const d = $('#palette'), q = $('#pal-q');
+  q.addEventListener('input', () => { Pal.sel = 0; palRender(); });
+  q.addEventListener('keydown', e => {
+    if (!Pal.items.length && e.key !== 'Escape') { e.stopPropagation(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); Pal.sel = (Pal.sel + 1) % Pal.items.length; palRender(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); Pal.sel = (Pal.sel - 1 + Pal.items.length) % Pal.items.length; palRender(); }
+    else if (e.key === 'Enter') { e.preventDefault(); palRun(Pal.sel); }
+    e.stopPropagation();                 // the page's own shortcuts stay out of the palette
+  });
+  $('#pal-list').addEventListener('click', e => { const li = e.target.closest('li[data-i]'); if (li) palRun(+li.dataset.i); });
+  $('#pal-list').addEventListener('mousemove', e => { const li = e.target.closest('li[data-i]'); if (li && +li.dataset.i !== Pal.sel) { Pal.sel = +li.dataset.i; palRender(); } });
+  d.addEventListener('click', e => { if (e.target === d) d.close(); });      // click outside closes
+}
+
+// ---------------------------------------------------------------- phone: panels as bottom sheets
+function bindSheets() {
+  document.querySelectorAll('[data-sheet]').forEach(b => b.addEventListener('click', () => {
+    const which = b.dataset.sheet;
+    if (which === 'convo') { closeSheets(); return toggleArea(3); }
+    const panel = $('#' + which), open = !panel.classList.contains('sheet');
+    closeSheets();
+    if (open) { panel.classList.add('sheet'); setDocked(which, false, false); b.setAttribute('aria-pressed', 'true'); }
+  }));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheets(); });
+  document.querySelectorAll('[data-collapse]').forEach(b => b.addEventListener('click', closeSheets));
+}
+function closeSheets() {
+  document.querySelectorAll('.panel.sheet').forEach(p => p.classList.remove('sheet'));
+  document.querySelectorAll('[data-sheet]').forEach(b => b.removeAttribute('aria-pressed'));
+}

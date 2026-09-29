@@ -97,7 +97,7 @@ const Graph3D = (() => {
   let composer, bloom, lens, poke = 0, preview = null, fps = 60, frames = 0, fpsT = 0;
   let pointsGeo, pointsMat, edgeGeo, edgeMat, beamGeo, beamMat, travGeo, travMat;
   let heroes = [], heroByNode = new Map();
-  let labels = [], card, coreTag;
+  let labels = [], card, coreTag, tagSize = [180, 40];     // tagSize: measured when its text changes, not per frame
   let travelers = [];
   let screen = new Float32Array(0);           // projected x, y, depth per node
 
@@ -987,6 +987,10 @@ const Graph3D = (() => {
     project(tmpUp.set(0, CORE_R, 0), pr);
     const coreR = Math.abs(pr[1] - cy) * 1.05, coreDist = camera.position.length();
     const placed = [{ x0: cx - coreR, y0: cy - coreR * 0.55, x1: cx + coreR, y1: cy + coreR * 0.55, core: true }];
+    // the status tag under the core ("STANDBY · Listening for…"): no label may cover it, key or not
+    project(tmpUp.set(0, -CORE_R * 0.62, 0), pr);
+    const tagW = tagSize[0] / 2 + 12;
+    placed.push({ x0: pr[0] - tagW, y0: pr[1] + 18, x1: pr[0] + tagW, y1: pr[1] + 26 + tagSize[1] + 8, tag: true });
     let li = 0;
     const depth = new THREE.Vector3();
     for (const n of cand) {
@@ -1000,7 +1004,7 @@ const Graph3D = (() => {
       const behindCore = Math.hypot(x - cx, y - cy) < coreR && (heroByNode.get(n.id)?.group.position || n.p).distanceTo(camera.position) > coreDist;
       const key = n === hover || n === focus || (found && found.has(n.id)) || (path && path.nodes.has(n.id));
       if (behindCore && !key) continue;
-      if (placed.some(b => (!b.core || !key) && box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)) continue;
+      if (placed.some(b => (b.tag || !b.core || !key) && box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)) continue;
       placed.push(box);
       depth.copy(heroByNode.get(n.id)?.group.position || n.p);
       const d = depth.distanceTo(camera.position);
@@ -1050,6 +1054,7 @@ const Graph3D = (() => {
     coreTag.querySelector('span').textContent = detail
       ? detail + (state === 'memory' ? '' : ctx)
       : (state === 'idle' && n ? `${n} memor${n === 1 ? 'y' : 'ies'} linked${ctx}` : STATES[state].d + ctx);
+    requestAnimationFrame(() => { tagSize = [coreTag.offsetWidth || 180, coreTag.offsetHeight || 40]; });
   }
 
   // ---- input ------------------------------------------------------------------

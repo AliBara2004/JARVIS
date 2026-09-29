@@ -253,6 +253,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"capture": capture.latest()})
         if u.path == "/api/widgets":
             return self._json(tools.widgets())
+        if u.path == "/api/history":
+            return self._json({"turns": brain.transcript()})
         if u.path == "/api/memory":
             return self._json({"facts": memory.all_facts()})
         if u.path == "/api/search":
