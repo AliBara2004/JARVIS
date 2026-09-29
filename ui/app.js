@@ -216,7 +216,8 @@ async function openNote(id) {
   $('.left').classList.toggle('reading', id !== null);
   if (id === null) {
     el.className = 'note empty';
-    el.innerHTML = 'Select a memory in the matrix to inspect it.<br><span class="hint">Shift-click a second one to trace the path between them.</span>';
+    el.innerHTML = 'Click a memory in the matrix to inspect it.';
+    el.title = 'Shift-click a second one to trace the path between them.';
     return;
   }
   let n;
@@ -224,7 +225,7 @@ async function openNote(id) {
   catch (e) { el.textContent = `Couldn't load note: ${e.message}`; return; }
   const color = Graph.colorFor(n.type);
   const meta = Object.entries(n.meta).filter(([k]) => k !== 'type');
-  el.className = 'note';
+  el.className = 'note'; el.title = '';
   const vault = STATUS?.vault;
   const obsidian = vault ? `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(n.rel.replace(/\.md$/i, ''))}` : '';
   el.innerHTML = `
@@ -248,7 +249,7 @@ async function openNote(id) {
 function showPath(ids, from, to) {
   const el = $('#note');
   $('.left').classList.add('reading');
-  el.className = 'note';
+  el.className = 'note'; el.title = '';
   if (!ids) {
     el.innerHTML = `<div class="label">Path</div><p>No route between <b>${esc(from.title)}</b> and <b>${esc(to.title)}</b> with the current filters.</p>`;
     return;

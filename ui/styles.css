@@ -201,8 +201,11 @@ body.no-telemetry .panel { top: 16px; }
 .chip.action:hover, #spend-chip:hover, #telegram-chip:hover, #google-chip:hover { color: var(--text); border-color: var(--line-2); }
 
 /* ---------- inspector ---------- */
-.inspector { flex: 1 1 auto; min-height: 110px; display: flex; flex-direction: column; }
-@media (max-height: 820px) { .hubs li:nth-child(n+6) { display: none; } }
+.inspector { flex: none; display: flex; flex-direction: column; }
+/* reading a note: the inspector takes the room (hubs step aside); otherwise it's just its hint */
+.left.reading .inspector { flex: 1 1 auto; min-height: 160px; }
+.left .deck { gap: 11px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+.left.reading .deck { overflow: hidden; }
 .note { overflow: auto; min-height: 0; padding-right: 4px; }
 .note.empty { color: var(--muted); font-size: 12.5px; }
 .note .hint { color: var(--faint); font-size: 11.5px; }
@@ -241,7 +244,7 @@ body.no-telemetry .panel { top: 16px; }
 .hubs ol { margin: 0; padding: 0; list-style: none; counter-reset: h; }
 .hubs li {
   position: relative; counter-increment: h; display: flex; align-items: center; gap: 8px;
-  padding: 5px 6px 8px; border-radius: 2px; cursor: pointer; font-size: 12px;
+  padding: 4px 6px 7px; border-radius: 2px; cursor: pointer; font-size: 12px;
 }
 .hubs li::before { content: counter(h, decimal-leading-zero); font: 10px var(--mono); color: var(--faint); width: 18px; }
 .hubs li:hover, .hubs li:focus-visible { background: var(--focus); }
@@ -597,14 +600,14 @@ body.right-docked .convo { right: 84px; }
    Today strip (left deck): session, news, next up, goals
    ===================================================================== */
 .today { display: flex; flex-direction: column; gap: 1px; background: var(--line); border: 1px solid var(--line); flex: none; }
-.trow { position: relative; display: grid; grid-template-columns: 1fr; gap: 3px; padding: 9px 11px 10px; background: rgba(14, 16, 23, .92); }
+.trow { position: relative; display: grid; grid-template-columns: 1fr; gap: 2px; padding: 7px 11px 8px; background: rgba(14, 16, 23, .92); }
 .trow .tk { font: 500 10px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--faint); }
 .trow .tv { font: 600 15px/1.25 var(--display); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .trow .ts { font-size: 11.5px; color: var(--muted); }
 .trow .meter { margin-top: 4px; }
 .trow[role=button] { cursor: pointer; }
 .trow[role=button]:hover { background: var(--focus); }
-.trow:first-child .tv { font-size: 19px; background: linear-gradient(120deg, var(--stat-a), var(--stat-b)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.trow:first-child .tv { font-size: 18px; background: linear-gradient(120deg, var(--stat-a), var(--stat-b)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .trow.soon .tv, .trow.soon .tk { color: var(--cyan); -webkit-text-fill-color: currentColor; }
 .trow.live .tv { -webkit-text-fill-color: var(--emerald); }
 .trow.live::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--emerald); box-shadow: 0 0 8px var(--emerald); }
