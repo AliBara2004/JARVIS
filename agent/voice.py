@@ -26,6 +26,8 @@ FALLBACK_VOICE = "JBFqnCBsd6RMkjVDRZzb"   # ElevenLabs premade "George" (British
 
 _last_error = {"tts": "", "stt": ""}
 RETRY_ELEVEN = 30 * 60             # after ElevenLabs fails, use the local pack this long before trying it again
+RETRY_QUOTA = 6 * 3600             # ...but out of credits won't fix itself in 30 minutes: don't keep paying the round trip
+SEND_TIMEOUT = {"tts": 12, "stt": 20}   # seconds: a slow ElevenLabs is worse than the local voice
 _out = {"tts": 0.0, "stt": 0.0}    # when ElevenLabs last failed, per direction
 
 
@@ -42,7 +44,8 @@ def _voice_id():
 
 
 def _eleven_out(kind):
-    return time.time() - _out[kind] < RETRY_ELEVEN
+    wait = RETRY_QUOTA if "credits used up" in _last_error[kind] else RETRY_ELEVEN
+    return time.time() - _out[kind] < wait
 
 
 def status():
@@ -62,7 +65,8 @@ def speak(text, previous_text=""):
                 raise
             _out["tts"] = time.time()
     try:
-        return localvoice.tts(speakable(text)), "audio/wav", "local"
+        audio, mime = localvoice.speech(speakable(text))
+        return audio, mime, "local"
     except Exception as e:
         raise VoiceError(f"Local voice failed: {e}")
 
@@ -123,6 +127,7 @@ def speakable(text):
     t = re.sub(r"https?://\S+", "the link on screen", text or "")
     t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)                      # [label](url)
     t = re.sub(r"\[\[([^\]|]+)(\|[^\]]+)?\]\]", r"\1", t)              # [[wikilinks]]
+    t = re.sub(r"`?(?:[\w\-]+/)*([\w\-]+(?: [\w\-]+)*)\.md\b`?", r"\1", t)  # `Trading/Risk Rules.md` → Risk Rules
     t = re.sub(r"^\s*([-*•]|\d+[.)])\s+", "", t, flags=re.M)               # list markers
     t = re.sub(r"\s*(->|→|=>)\s*", " to ", t)                                # before ">" is stripped
     t = re.sub(r"[*_`#>|~]+", "", t)
@@ -201,7 +206,7 @@ def _field(boundary, name, value):
 
 def _send(req, kind):
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=SEND_TIMEOUT[kind]) as r:
             return r.read()
     except urllib.error.HTTPError as e:
         msg = _explain(e)
@@ -209,6 +214,10 @@ def _send(req, kind):
         raise VoiceError(msg)
     except urllib.error.URLError as e:
         msg = f"Can't reach ElevenLabs: {e.reason}"
+        _last_error[kind] = msg
+        raise VoiceError(msg)
+    except (TimeoutError, OSError) as e:        # a stall or a dropped connection: fall back, don't drop the request
+        msg = f"ElevenLabs didn't answer: {e}"
         _last_error[kind] = msg
         raise VoiceError(msg)
 

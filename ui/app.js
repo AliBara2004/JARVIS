@@ -349,6 +349,7 @@ async function ask(text, opts = {}) {
         if (ev.type === 'text') { shown += ev.delta; sayEl().textContent = shown; }
         else if (ev.type === 'sentence') { if (opts.speak) enqueueSpeech(ev.text); }
         else if (ev.type === 'tool') {
+          if (opts.speak) playFiller();
           caption(TOOL_CAPTIONS[ev.name] || 'Working…', 'dim');
           setReactor(MEMORY_TOOLS.has(ev.name) ? 'memory' : 'thinking', TOOL_CAPTIONS[ev.name]?.replace('…', ''));
         }
@@ -813,6 +814,7 @@ async function voiceStart() {
   if (!await openMic()) return;
   Voice.on = true;
   listenAgain(0);
+  loadFillers();
   Wake.load().catch(() => { /* barge-in by voice just isn't available; Space/Esc still work */ });
 }
 
@@ -838,6 +840,7 @@ function standby() {
 async function arm() {
   if (!await openMic()) return;
   Voice.armed = true;
+  loadFillers();
   try { localStorage.setItem(WAKE_PREF, '1'); } catch { /* private mode: preference just isn't remembered */ }
   setVoiceState(Voice.on ? Voice.state : 'standby');
   if (!Wake.ready) {
@@ -918,7 +921,10 @@ function onAudioBlock(e) {
     if (!Voice.speechStart) Voice.speechStart = now;
     Voice.lastLoud = now;
     Voice.lastActivity = now;
-    if (!Voice.heard && now - Voice.speechStart >= MIN_SPEECH_MS) { Voice.heard = true; caption('Hearing you…', 'live'); }
+    if (!Voice.heard && now - Voice.speechStart >= MIN_SPEECH_MS) {
+      Voice.heard = true; caption('Hearing you…', 'live');
+      post('/api/warm').catch(() => {});            // the model's connection opens while you're still talking
+    }
   } else if (Voice.speechStart && !Voice.heard && now - Voice.lastLoud > 300) {
     Voice.speechStart = 0;            // a blip, not speech
   }
@@ -989,8 +995,9 @@ async function endTurn() {
     caption('Transcribing…');
     const wav = localVoice('stt') ? turnWav() : null;
     try {
-      // while ElevenLabs is out, send WAV straight away so whisper on this PC can read it
-      let j = await send(wav && STATUS?.voice?.out?.stt ? wav : blob).catch(async e => {
+      // WAV whenever the local pack is there: whisper reads it directly (and ElevenLabs takes it too), so the
+      // server never has to convert a WebM recording first
+      let j = await send(wav || blob).catch(async e => {
         if (wav && e.local) return send(wav);          // ElevenLabs just failed: same turn, transcribed locally
         throw e;
       });
@@ -1232,6 +1239,27 @@ async function playQueue() {
 
 function speechDone() {
   return Speech.playing ? new Promise(res => { Speech.idle = res; }) : Promise.resolve();
+}
+
+// "One sec.": when a spoken turn starts a tool before JARVIS has said anything, a short phrase made once
+// (when voice turns on) plays straight away, so the wait for the notes, calendar or inbox isn't silence.
+const FILLERS = ['One sec.', 'Let me check.', 'Bear with me.', 'Right, one moment.'];
+const Filler = { clips: [], loading: null, last: -1 };
+function loadFillers() {
+  Filler.loading ??= (async () => {
+    for (const t of FILLERS) {
+      try { const c = await fetchSpeech(t, ''); if (c) Filler.clips.push(c); } catch { /* no voice: no filler */ }
+    }
+  })();
+  return Filler.loading;
+}
+function playFiller() {
+  if (!Filler.clips.length || Speech.said || Speech.queue.length || Speech.playing || Speech.cancelled) return;
+  let i = Math.floor(Math.random() * Filler.clips.length);
+  if (i === Filler.last) i = (i + 1) % Filler.clips.length;           // not the same one twice running
+  Filler.last = i;
+  Speech.queue.push(Promise.resolve(Filler.clips[i]));
+  playQueue();
 }
 
 async function fetchSpeech(text, previous) {

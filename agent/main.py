@@ -348,6 +348,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"capture": capture.grab()})
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
+        if path == "/api/warm":                        # Ali has started talking: open the model connection now
+            threading.Thread(target=llm.warm, daemon=True).start()
+            return self._json({"ok": True})
         if path == "/api/reminders/seen":
             reminders.seen([str(i) for i in body.get("ids") or []][:50])
             return self._json({"ok": True})

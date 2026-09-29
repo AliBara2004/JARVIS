@@ -10,6 +10,7 @@ Everything lives in local/ (gitignored). Downloads come from the projects' offic
 checked against the sizes those releases publish; the SHA-256 of each file is printed and saved to
 local/SOURCES.txt.
 """
+import array
 import hashlib
 import io
 import json
@@ -111,13 +112,13 @@ class _Helper:
                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self._read(4)                      # "ready": the model has loaded
 
-    def say(self, text):
+    def say(self, text, fmt="wav"):
         with self.lock:
             for attempt in (1, 2):         # a crashed helper is restarted once
                 try:
                     if not self.proc or self.proc.poll() is not None:
                         self._start()
-                    req = json.dumps({"text": text, "voice": KOKORO_VOICE, "speed": KOKORO_SPEED}) + "\n"
+                    req = json.dumps({"text": text, "voice": KOKORO_VOICE, "speed": KOKORO_SPEED, "format": fmt}) + "\n"
                     self.proc.stdin.write(req.encode("utf-8"))
                     self.proc.stdin.flush()
                     (n,) = struct.unpack(">I", self._read(4))
@@ -161,6 +162,18 @@ def warm():
 
 
 # ------------------------------------------------------------------ speaking (Piper)
+def speech(text):
+    """(audio, mime) for the page and Telegram: Kokoro as OGG/Opus (small, and it gets past the local network
+    scanner that stalls WAV replies), or Piper's WAV if Kokoro isn't there."""
+    if kokoro_python():
+        try:
+            return _kokoro.say(" ".join(text.split()), "ogg"), "audio/ogg"
+        except Exception:
+            if not (piper_exe() and voice_model()):
+                raise
+    return tts(text), "audio/wav"
+
+
 def tts(text):
     """Speech for `text` as WAV bytes: Kokoro if installed, else Piper. Text should already be speakable()."""
     if kokoro_python():
@@ -184,8 +197,19 @@ def tts(text):
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(rate)
-        w.writeframes(r.stdout)
+        w.writeframes(_no_digital_silence(r.stdout))
     return buf.getvalue()
+
+
+def _no_digital_silence(raw):
+    """16-bit PCM with every exact-zero sample nudged to ±1 (inaudible). Long runs of zero bytes stall local
+    replies on this PC for ~20 s (Norton's network scanner, by every test); kokoro_helper does the same."""
+    pcm = array.array("h", raw[: len(raw) // 2 * 2])
+    noise = os.urandom(len(pcm))
+    for i, v in enumerate(pcm):
+        if v == 0:
+            pcm[i] = 1 if noise[i] & 1 else -1
+    return pcm.tobytes()
 
 
 # ------------------------------------------------------------------ listening (whisper.cpp)
@@ -227,10 +251,11 @@ class _Whisper:
 
     def transcribe(self, wav_bytes):
         boundary = "----jarvis" + os.urandom(8).hex()
+        field = lambda k, v: f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}"
+        extra = field("audio_ctx", audio_ctx(wav_bytes)) if audio_ctx(wav_bytes) < 1500 else ""
         body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"turn.wav\"\r\n"
                 f"Content-Type: audio/wav\r\n\r\n").encode() + wav_bytes + \
-               (f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n"
-                f"--{boundary}--\r\n").encode()
+               (field("response_format", "text") + extra + f"\r\n--{boundary}--\r\n").encode()
         req = urllib.request.Request(f"http://127.0.0.1:{WHISPER_PORT}/inference", data=body, method="POST",
                                      headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
         with urllib.request.urlopen(req, timeout=60) as r:
@@ -238,6 +263,18 @@ class _Whisper:
 
 
 _whisper = _Whisper()
+
+# whisper's encoder always reads a 30-second window (1500 frames). A 5-second turn only needs ~250 of them;
+# sizing the window to the clip cut transcription from ~1.05 s to ~0.4 s here with the same words.
+CTX_PER_SEC = 50
+CTX_MARGIN = 128           # headroom: too tight a window starts dropping or inventing words
+CTX_MIN = 448
+
+
+def audio_ctx(wav_bytes):
+    """Encoder frames needed for a 16 kHz mono 16-bit WAV (1500 = the full 30 s window)."""
+    secs = max(0, len(wav_bytes) - 44) / 32000
+    return min(1500, max(CTX_MIN, int(secs * CTX_PER_SEC) + CTX_MARGIN))
 
 
 def _clean(text):

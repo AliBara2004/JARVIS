@@ -2,10 +2,13 @@
 
 The key never leaves this process.
 """
+import http.client
 import json
 import os
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import data  # noqa: F401 — loads .env before the constants below are read
@@ -397,28 +400,96 @@ def _or_request(system, messages, tools, max_tokens, model, on_text, effort=None
         body["plugins"] = _or_web(tools)
     if on_text is not None:
         body["stream"] = True
-    req = urllib.request.Request(OR_API, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Authorization": f"Bearer {_or_key()}", "Content-Type": "application/json",
-                                          "X-Title": "JARVIS"})
+    body_bytes = json.dumps(body).encode()
+    headers = {"Authorization": f"Bearer {_or_key()}", "Content-Type": "application/json", "X-Title": "JARVIS"}
     for attempt in range(3):
         try:
-            r = urllib.request.urlopen(req, timeout=120)
-            break
-        except urllib.error.HTTPError as e:
-            try:
-                msg = (json.loads(e.read() or b"{}").get("error") or {}).get("message") or e.reason
-            except Exception:
-                msg = e.reason
-            if e.code in (429, 500, 502, 503) and attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            raise LLMError(f"OpenRouter {e.code}: {msg}")
-        except urllib.error.URLError as e:
+            conn, r = _or_post(body_bytes, headers)
+        except (http.client.HTTPException, OSError) as e:
             if attempt < 2:
                 time.sleep(1.5)
                 continue
-            raise LLMError(f"OpenRouter unreachable: {e.reason}")
-    with r:
+            raise LLMError(f"OpenRouter unreachable: {e}")
+        if r.status == 200:
+            break
+        raw = r.read()
+        _or_give(conn)
+        try:
+            msg = (json.loads(raw or b"{}").get("error") or {}).get("message") or r.reason
+        except Exception:
+            msg = r.reason
+        if r.status in (429, 500, 502, 503) and attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        raise LLMError(f"OpenRouter {r.status}: {msg}")
+    try:
+        out = _or_read(r, on_text)
+        r.read()                                 # drain the rest, so the connection can be reused
+        _or_give(conn)
+    except Exception:
+        conn.close()                             # left half-read: this connection is finished
+        raise
+    usage.record_llm(model, out["usage"])
+    return out
+
+
+# A TLS handshake to OpenRouter costs a few hundred ms. Connections are kept open and reused (a turn with a
+# tool makes two calls back to back), and warm() opens one while Ali is still talking.
+_or_pool, _or_pool_lock = [], threading.Lock()
+OR_POOL_MAX = 3
+
+
+def _or_give(conn):
+    with _or_pool_lock:
+        if len(_or_pool) < OR_POOL_MAX:
+            _or_pool.append(conn)
+            return
+    conn.close()
+
+
+def _or_new():
+    return http.client.HTTPSConnection(urllib.parse.urlparse(OR_API).netloc, timeout=120)
+
+
+def _or_post(body_bytes, headers):
+    """(connection, response) for a POST to OpenRouter, on a pooled connection if one is still open."""
+    path = urllib.parse.urlparse(OR_API).path
+    with _or_pool_lock:
+        conn = _or_pool.pop() if _or_pool else None
+    if conn is not None:
+        try:
+            conn.request("POST", path, body=body_bytes, headers=headers)
+            return conn, conn.getresponse()
+        except (http.client.HTTPException, OSError):
+            conn.close()                         # idle too long and the server closed it: open a fresh one
+    conn = _or_new()
+    try:
+        conn.request("POST", path, body=body_bytes, headers=headers)
+        return conn, conn.getresponse()
+    except Exception:
+        conn.close()
+        raise
+
+
+def warm():
+    """Open a connection to OpenRouter ahead of the next call. Cheap; a no-op if one is already open."""
+    if not (_or_key() and any(is_openrouter(m) for m in (MODEL, FAST_MODEL, CHEAP_MODEL))):
+        return False
+    with _or_pool_lock:
+        if _or_pool:
+            return True
+    try:
+        conn = _or_new()
+        conn.connect()
+        _or_give(conn)
+        return True
+    except OSError:
+        return False
+
+
+def _or_read(r, on_text):
+    """The reply, from a full JSON body or an SSE stream, as Anthropic-shaped blocks."""
+    if True:
         if on_text is None:
             resp = json.loads(r.read())
             if resp.get("error"):
@@ -457,5 +528,4 @@ def _or_request(system, messages, tools, max_tokens, model, on_text, effort=None
                         slot["arguments"] += fn.get("arguments") or ""
                     finish = ch.get("finish_reason") or finish
             out = _or_blocks(text, [calls[i] for i in sorted(calls)], finish, usage_, cites)
-    usage.record_llm(model, out["usage"])
     return out

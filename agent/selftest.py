@@ -463,6 +463,19 @@ check("Nudges can be switched off", _pro.enabled() == set())
 os.environ.pop("JARVIS_NUDGES", None)
 check("Board moves use the same stages as saying it", tools.pipeline_board()["stages"] == status.PROSPECT_STAGES)
 
+print("\nVoice speed")
+import localvoice as _lv  # noqa: E402
+import voice as _voice  # noqa: E402
+check("File paths are spoken as note titles",
+      _voice.speakable("That's $250, according to `Trading/Risk Rules.md`.") == "That's 250 dollars, according to Risk Rules.")
+check("...without eating the words before them", _voice.speakable("It's in notes like Start here.md") == "It's in notes like Start here")
+check("whisper's window is sized to the clip, with headroom", _lv.audio_ctx(b"0" * (44 + 6 * 32000)) == 428 + 20
+      and _lv.audio_ctx(b"0" * (44 + 45 * 32000)) == 1500)
+check("A question his notes clearly answer is searched up front", brain._prefetch("What's my risk per trade?") is not None
+      or not any(n.title == "Risk Rules" for n in vault.get().notes))
+check("Small talk isn't", brain._prefetch("Evening, you there?") is None)
+check("Out of ElevenLabs credits backs off for hours, not minutes", _voice.RETRY_QUOTA >= 3600)
+
 print("\nSecrets on disk")
 for f in (".env", ".secrets/google_token.json"):
     ign = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", f]).returncode == 0
