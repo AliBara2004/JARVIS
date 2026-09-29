@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07080c">
+  <meta name="color-scheme" content="dark">
   <title>JARVIS</title>
   <link rel="preload" href="vendor/fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="vendor/fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
@@ -36,7 +38,7 @@
   <div class="scanlines" aria-hidden="true"></div>
   <div class="dropzone" id="dropzone" hidden><div>Drop a screenshot, photo or PDF for JARVIS</div></div>
 
-  <div id="banner" class="banner" hidden></div>
+  <div id="banner" class="banner" role="alert" hidden></div>
 
   <!-- TOP: telemetry -->
   <header class="telemetry" id="telemetry">
@@ -47,7 +49,7 @@
       <span class="t-k">CORE</span><b class="t-v" id="t-build" title="Code version running now">—</b>
       <span id="mode" class="badge">—</span>
     </div>
-    <div class="t-mid"><span class="t-state" id="t-state" data-state="idle">IDLE</span></div>
+    <div class="t-mid"><span class="t-state" id="t-state" data-state="idle" role="status">IDLE</span></div>
     <div class="t-right">
       <span class="t-k t-model-k">MODEL</span><b class="t-v" id="t-model">—</b>
       <button class="t-theme" id="theme" title="Colour theme: violet, Stark amber, tactical cyan (T)"><i></i><span>VIOLET</span></button>
@@ -59,12 +61,12 @@
   <!-- LEFT deck: system, inspector, hubs -->
   <aside class="panel left" id="left">
     <nav class="dock" aria-label="Left deck">
-      <button data-open="system" title="System"><svg><use href="#i-cpu"/></svg></button>
-      <button data-open="inspector" title="Inspector"><svg><use href="#i-search"/></svg></button>
-      <button data-open="hubs" title="Top hubs"><svg><use href="#i-bars"/></svg></button>
+      <button data-open="system" title="System" aria-label="System"><svg aria-hidden="true"><use href="#i-cpu"/></svg></button>
+      <button data-open="inspector" title="Inspector" aria-label="Inspector"><svg aria-hidden="true"><use href="#i-search"/></svg></button>
+      <button data-open="hubs" title="Top hubs" aria-label="Top hubs"><svg aria-hidden="true"><use href="#i-bars"/></svg></button>
     </nav>
     <div class="deck">
-      <div class="label">System <button class="link collapse" data-collapse="left" title="Collapse (1)"><svg><use href="#i-left"/></svg></button></div>
+      <div class="label">System <button class="link collapse" data-collapse="left" title="Collapse (1)" aria-label="Collapse"><svg aria-hidden="true"><use href="#i-left"/></svg></button></div>
       <div class="stats" id="stats"></div>
       <div class="chips" id="chips"></div>
       <section class="diag" id="diag-sec">
@@ -87,12 +89,12 @@
   <!-- RIGHT deck: widgets, filters -->
   <aside class="panel right" id="right">
     <nav class="dock" aria-label="Right deck">
-      <button data-open="widgets" title="Widgets"><svg><use href="#i-target"/></svg></button>
-      <button data-open="filters" title="Filter"><svg><use href="#i-filter"/></svg></button>
+      <button data-open="widgets" title="Widgets" aria-label="Widgets"><svg aria-hidden="true"><use href="#i-target"/></svg></button>
+      <button data-open="filters" title="Filter" aria-label="Filter"><svg aria-hidden="true"><use href="#i-filter"/></svg></button>
     </nav>
     <div class="deck">
       <section class="widgets">
-        <div class="label"><button class="link collapse" data-collapse="right" title="Collapse (2)"><svg><use href="#i-right"/></svg></button>
+        <div class="label"><button class="link collapse" data-collapse="right" title="Collapse (2)" aria-label="Collapse"><svg aria-hidden="true"><use href="#i-right"/></svg></button>
           Intelligence <button class="link" id="widgets-edit" title="Show, hide and reorder widgets">edit</button></div>
         <div id="widgets"></div>
       </section>
@@ -116,10 +118,10 @@
 
   <!-- scene controls, bottom-right of the matrix -->
   <div class="scene-ctl" id="scene-ctl">
-    <button id="zoom-in" title="Zoom in (+)"><svg><use href="#i-plus"/></svg></button>
-    <button id="zoom-out" title="Zoom out (−)"><svg><use href="#i-minus"/></svg></button>
-    <button id="lock" title="Lock the view: stop drift and parallax (L)"><svg><use href="#i-unlock"/></svg></button>
-    <button id="fit" title="Fit (F)"><svg><use href="#i-fit"/></svg></button>
+    <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in"><svg aria-hidden="true"><use href="#i-plus"/></svg></button>
+    <button id="zoom-out" title="Zoom out (−)" aria-label="Zoom out"><svg aria-hidden="true"><use href="#i-minus"/></svg></button>
+    <button id="lock" title="Lock the view: stop drift and parallax (L)" aria-label="Lock the view: stop drift and parallax"><svg aria-hidden="true"><use href="#i-unlock"/></svg></button>
+    <button id="fit" title="Fit (F)" aria-label="Fit"><svg aria-hidden="true"><use href="#i-fit"/></svg></button>
   </div>
 
   <!-- BOTTOM: command console -->
@@ -128,13 +130,13 @@
     <div class="tray" id="tray" hidden></div>
     <form id="ask" autocomplete="off">
       <div class="orb" aria-hidden="true"><div class="bars" id="bars"><i></i><i></i><i></i><i></i><i></i></div></div>
-      <button type="button" class="icon-btn" id="clip" title="Attach a screenshot, photo or PDF (or paste / drop one)"><svg><use href="#i-clip"/></svg></button>
-      <button type="button" class="icon-btn" id="shot" title="Screenshot your screen in 3 seconds (or press Ctrl+Alt+J anywhere)"><svg><use href="#i-shot"/></svg></button>
+      <button type="button" class="icon-btn" id="clip" title="Attach a screenshot, photo or PDF (or paste / drop one)" aria-label="Attach a screenshot, photo or PDF"><svg aria-hidden="true"><use href="#i-clip"/></svg></button>
+      <button type="button" class="icon-btn" id="shot" title="Screenshot your screen in 3 seconds (or press Ctrl+Alt+J anywhere)" aria-label="Screenshot your screen in 3 seconds"><svg aria-hidden="true"><use href="#i-shot"/></svg></button>
       <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple hidden>
-      <input id="q" type="text" placeholder="" aria-label="Ask JARVIS">
-      <kbd class="hint-key" title="Focus the console">Ctrl K</kbd>
+      <input id="q" name="q" type="text" placeholder="" aria-label="Ask JARVIS" enterkeyhint="send" spellcheck="false">
+      <kbd class="hint-key" title="Focus the console">Ctrl&nbsp;K</kbd>
       <span class="badge warn" id="model-badge" hidden title="No model: replies come from keyword routing">NO MODEL</span>
-      <button type="submit" class="btn primary execute" title="Send (Enter)"><svg><use href="#i-zap"/></svg>Execute</button>
+      <button type="submit" class="btn primary execute" title="Send (Enter)" aria-label="Send"><svg aria-hidden="true"><use href="#i-zap"/></svg>Execute</button>
     </form>
     <div class="actions">
       <button class="btn" id="wake" disabled>Hey Jarvis</button>

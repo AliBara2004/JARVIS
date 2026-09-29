@@ -1167,7 +1167,7 @@ const Graph3D = (() => {
     preview: type => { preview = type ? new Set(nodes.filter(n => n.type === type).map(n => n.id)) : null; },
     get fps() { return fps; },
     get quiet() { return isQuiet; },          // true while drawing at the idle rate
-    // Tab: the next memory worth looking at (relevant ones first, then the biggest hubs)
+    // ] or →: the next memory worth looking at (relevant ones first, then the biggest hubs)
     cycle: (dir = 1) => {
       const pool = (found && found.size ? [...found].map(i => nodes[i]) : byDeg.slice(0, 12)).filter(n => !hidden.has(n.type));
       if (!pool.length) return;

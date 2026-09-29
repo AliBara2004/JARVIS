@@ -126,10 +126,11 @@ function measureInsets() {
   });
 }
 
-const short = m => String(m || '').replace(/^claude-/, '');
+const short = m => String(m || '').split('/').pop().replace(/^claude-/, '').replace(/^gpt-\d+-/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ');
 function renderStatus(s) {
   $('#t-build').textContent = (s.code_version || '—').slice(0, 7);
-  $('#t-model').textContent = s.model.fast_model ? `${short(s.model.model)} / ${short(s.model.fast_model)}` : short(s.model.model);
+  $('#t-model').textContent = s.model.fast_model ? `${short(s.model.model)} · ${short(s.model.fast_model)}` : short(s.model.model);
+  $('#t-model').title = [s.model.model, s.model.fast_model].filter(Boolean).join(' / ');
   if (outOfCredit(s.voice.stt_error) && SR && !s.voice.local?.stt && !Fallback.stt) Fallback.stt = Date.now();
   if (outOfCredit(s.voice.tts_error) && 'speechSynthesis' in window && !s.voice.local?.tts && !Fallback.tts) Fallback.tts = Date.now();
   const m = $('#mode');
@@ -191,7 +192,7 @@ function renderHubs() {
   const top = [...GRAPH.nodes].sort((a, b) => b.deg - a.deg).slice(0, 8);
   const max = Math.max(1, ...top.map(n => n.deg));
   $('#hubs').innerHTML = top.map(n =>
-    `<li data-id="${n.id}"><span class="dot" style="background:${Graph.colorFor(n.type)}"></span>
+    `<li data-id="${n.id}" tabindex="0" role="button"><span class="dot" style="background:${Graph.colorFor(n.type)}"></span>
      <span class="t">${esc(n.title)}</span><span class="n">${n.deg}</span>
      <span class="w"><i style="width:${Math.round(100 * n.deg / max)}%"></i></span></li>`).join('');
 }
@@ -201,7 +202,7 @@ function renderFilters() {
   for (const n of GRAPH.nodes) counts[n.type] = (counts[n.type] || 0) + 1;
   const types = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
   $('#filters').innerHTML = types.map(t =>
-    `<li data-type="${esc(t)}" class="${hiddenTypes.has(t) ? 'off' : ''}">
+    `<li data-type="${esc(t)}" class="${hiddenTypes.has(t) ? 'off' : ''}" tabindex="0" role="switch" aria-checked="${!hiddenTypes.has(t)}">
        <span class="sw" style="background:${Graph.colorFor(t)}"></span>
        <span class="t">${esc(t)}</span><span class="n">${counts[t]}</span></li>`).join('');
 }
@@ -1373,6 +1374,7 @@ function bindUI() {
     const t = li.dataset.type;
     hiddenTypes.has(t) ? hiddenTypes.delete(t) : hiddenTypes.add(t);
     li.classList.toggle('off', hiddenTypes.has(t));
+    li.setAttribute('aria-checked', String(!hiddenTypes.has(t)));
     Graph.setHidden(hiddenTypes);
   });
   $('#show-all').addEventListener('click', () => {
@@ -1416,7 +1418,10 @@ function bindUI() {
 
   document.addEventListener('keydown', e => {
     const typing = document.activeElement === $('#q');
-    const onButton = document.activeElement?.tagName === 'BUTTON';
+    const onButton = document.activeElement?.tagName === 'BUTTON' || !!document.activeElement?.matches?.('[role=button],[role=switch],[role=checkbox]');
+    if ((e.key === 'Enter' || e.key === ' ') && document.activeElement?.matches?.('[role=button],[role=switch],[role=checkbox]')) {
+      e.preventDefault(); document.activeElement.click(); return;
+    }
     const inField = typing || ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
     if ((e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('#q').focus(); }
     else if (e.key === '/' && !typing) { e.preventDefault(); $('#q').focus(); }
@@ -1425,7 +1430,9 @@ function bindUI() {
     else if (!inField && (e.key === '-' || e.key === '_')) Graph.zoom?.(1.25);
     else if (!inField && (e.key === 'l' || e.key === 'L')) toggleLock();
     else if (!inField && (e.key === 't' || e.key === 'T') && !e.ctrlKey && !e.metaKey) cycleTheme();
-    else if (!inField && e.key === 'Tab' && Graph.cycle) { e.preventDefault(); Graph.cycle(e.shiftKey ? -1 : 1); }
+    else if (!inField && !onButton && Graph.cycle && [']', '[', 'ArrowRight', 'ArrowLeft'].includes(e.key)) {
+      e.preventDefault(); Graph.cycle(e.key === ']' || e.key === 'ArrowRight' ? 1 : -1);
+    }
     else if (e.key === ' ' && !typing && !onButton) {
       e.preventDefault();
       if (!Voice.on) voiceStart();
@@ -1610,12 +1617,12 @@ function saveWidgetPref() { try { localStorage.setItem(WIDGET_PREF, JSON.stringi
 
 function wGoals(d) {
   const g = d.goals || [], done = g.filter(x => x.done).length;
-  const list = g.map((x, i) => `<div class="goal ${x.done ? 'done' : ''}" data-goal="${i}" data-done="${x.done ? 1 : 0}">
-      <span class="box"></span><span class="gt">${esc(x.text)}</span></div>`).join('');
+  const list = g.map((x, i) => `<div class="goal ${x.done ? 'done' : ''}" data-goal="${i}" data-done="${x.done ? 1 : 0}" tabindex="0" role="checkbox" aria-checked="${!!x.done}">
+      <span class="box" aria-hidden="true"></span><span class="gt">${esc(x.text)}</span></div>`).join('');
   return { badge: g.length ? `${done}/${g.length}` : '',
     html: (list || '<div class="sub">No goals yet. Add one, or tell me what you want done today.</div>') +
       (g.length ? `<div class="meter"><i style="width:${Math.round(100 * done / g.length)}%"></i></div>` : '') +
-      '<input class="goal-add" id="goal-add" placeholder="+ add a goal" maxlength="200">' };
+      '<input class="goal-add" id="goal-add" placeholder="Add a goal…" aria-label="Add a goal" maxlength="200" autocomplete="off">' };
 }
 function wTraining(d) {
   const t = d.training || {};
@@ -1651,7 +1658,7 @@ function wActivity(d) {
   const now = Date.now() / 1000;
   const ago = t => { const m = Math.round((now - t) / 60); return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
   return { badge: `${a.length}`, html: `<ol class="stream">${a.slice(0, 6).map(x =>
-    `<li class="${now - x.at < 3600 ? 'fresh' : ''}" ${x.note != null ? `data-id="${x.note}"` : ''}><time>${ago(x.at)}</time>${esc(x.text)}</li>`).join('')}</ol>` };
+    `<li class="${now - x.at < 3600 ? 'fresh' : ''}" ${x.note != null ? `data-id="${x.note}" tabindex="0" role="button"` : ''}><time>${ago(x.at)}</time>${esc(x.text)}</li>`).join('')}</ol>` };
 }
 
 function renderWidgets() {
